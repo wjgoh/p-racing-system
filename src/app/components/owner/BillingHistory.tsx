@@ -1,8 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card } from "../ui/card";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
-import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import {
   Select,
@@ -35,6 +34,8 @@ import {
   FileText,
 } from "lucide-react";
 import { format } from "date-fns";
+import { apiListInvoices, apiUpdateInvoiceStatus, type InvoiceRecord } from "../api/invoices";
+import { getStoredUser } from "../api/session";
 
 interface InvoiceItem {
   description: string;
@@ -44,6 +45,7 @@ interface InvoiceItem {
 }
 
 interface Invoice {
+  invoiceId: number;
   id: string;
   vehicle: string;
   serviceType: string;
@@ -57,61 +59,85 @@ interface Invoice {
   paidDate?: Date;
 }
 
-const mockInvoices: Invoice[] = [
-  {
-    id: "INV-2026-001",
-    vehicle: "2020 Toyota Camry (ABC-1234)",
-    serviceType: "Oil Change & Tire Rotation",
-    items: [
-      { description: "Full Synthetic Oil Change", quantity: 1, unitPrice: 75, total: 75 },
-      { description: "Oil Filter", quantity: 1, unitPrice: 15, total: 15 },
-      { description: "Tire Rotation", quantity: 1, unitPrice: 40, total: 40 },
-    ],
-    subtotal: 130,
-    tax: 13,
-    total: 143,
-    status: "paid",
-    date: new Date("2026-01-15"),
-    paidDate: new Date("2026-01-16"),
-  },
-  {
-    id: "INV-2025-287",
-    vehicle: "2019 Honda Civic (XYZ-5678)",
-    serviceType: "Brake Service",
-    items: [
-      { description: "Front Brake Pads", quantity: 1, unitPrice: 120, total: 120 },
-      { description: "Brake Fluid Flush", quantity: 1, unitPrice: 80, total: 80 },
-      { description: "Labor (2 hours)", quantity: 2, unitPrice: 95, total: 190 },
-    ],
-    subtotal: 390,
-    tax: 39,
-    total: 429,
-    status: "paid",
-    date: new Date("2025-12-10"),
-    paidDate: new Date("2025-12-12"),
-  },
-  {
-    id: "INV-2026-045",
-    vehicle: "2020 Toyota Camry (ABC-1234)",
-    serviceType: "Annual Inspection",
-    items: [
-      { description: "State Inspection", quantity: 1, unitPrice: 50, total: 50 },
-      { description: "Multi-Point Inspection", quantity: 1, unitPrice: 35, total: 35 },
-    ],
-    subtotal: 85,
-    tax: 8.5,
-    total: 93.5,
-    status: "pending",
-    date: new Date("2026-01-20"),
-    dueDate: new Date("2026-02-04"),
-  },
-];
+const formatInvoiceId = (id: number) => `INV-${String(id).padStart(4, "0")}`;
+
+const formatVehicle = (invoice: InvoiceRecord) => {
+  const parts = [invoice.make, invoice.model, invoice.year]
+    .filter(Boolean)
+    .join(" ");
+  const plate = invoice.plate_number ? ` (${invoice.plate_number})` : "";
+  return `${parts || "Vehicle"}${plate}`;
+};
+
+const mapOwnerStatus = (
+  status: InvoiceRecord["status"]
+): Invoice["status"] => {
+  if (status === "paid") return "paid";
+  if (status === "overdue") return "overdue";
+  return "pending";
+};
 
 export function BillingHistory() {
-  const [invoices, setInvoices] = useState<Invoice[]>(mockInvoices);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [payingId, setPayingId] = useState<number | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [detailsDialogOpen, setDetailsDialogOpen] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
+
+  const loadInvoices = async () => {
+    const user = getStoredUser();
+    if (!user) {
+      setError("No active session. Please sign in again.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await apiListInvoices({ ownerId: user.user_id });
+      const mapped = data.map((inv) => {
+        const items = (inv.items ?? []).map((item) => {
+          const qty = Number(item.quantity ?? 0);
+          const unit = Number(item.unit_price ?? 0);
+          const total = Number(item.total ?? qty * unit);
+          return {
+            description: item.description,
+            quantity: qty,
+            unitPrice: unit,
+            total,
+          };
+        });
+        const computedSubtotal = items.reduce((sum, item) => sum + item.total, 0);
+        const subtotal = Number(inv.subtotal ?? computedSubtotal);
+        const tax = Number(inv.tax ?? 0);
+        const total = Number(inv.total_amount ?? subtotal + tax);
+        return {
+          invoiceId: inv.invoice_id,
+          id: formatInvoiceId(inv.invoice_id),
+          vehicle: formatVehicle(inv),
+          serviceType: inv.service_type ?? "Service",
+          items,
+          subtotal,
+          tax,
+          total,
+          status: mapOwnerStatus(inv.status),
+          date: new Date(inv.created_at),
+          dueDate: inv.due_date ? new Date(inv.due_date) : undefined,
+          paidDate: inv.paid_date ? new Date(inv.paid_date) : undefined,
+        } as Invoice;
+      });
+      setInvoices(mapped);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to load invoices");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadInvoices();
+  }, []);
 
   const filteredInvoices = invoices.filter(
     (inv) => filterStatus === "all" || inv.status === filterStatus
@@ -138,15 +164,25 @@ export function BillingHistory() {
     .filter((inv) => inv.status === "pending")
     .reduce((sum, inv) => sum + inv.total, 0);
 
-  const handlePayInvoice = (invoiceId: string) => {
-    setInvoices(
-      invoices.map((inv) =>
-        inv.id === invoiceId
-          ? { ...inv, status: "paid" as const, paidDate: new Date() }
-          : inv
-      )
-    );
-    setDetailsDialogOpen(false);
+  const handlePayInvoice = async (invoiceId: number) => {
+    if (payingId) return;
+    setPayingId(invoiceId);
+    setError(null);
+    try {
+      await apiUpdateInvoiceStatus({ invoiceId, status: "paid" });
+      setInvoices((prev) =>
+        prev.map((inv) =>
+          inv.invoiceId === invoiceId
+            ? { ...inv, status: "paid", paidDate: new Date() }
+            : inv
+        )
+      );
+      setDetailsDialogOpen(false);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to pay invoice");
+    } finally {
+      setPayingId(null);
+    }
   };
 
   return (
@@ -156,6 +192,7 @@ export function BillingHistory() {
         <p className="text-slate-600 mt-1">
           View and manage your service invoices
         </p>
+        {error && <p className="text-sm text-red-500 mt-2">{error}</p>}
       </div>
 
       {/* Stats */}
@@ -218,8 +255,13 @@ export function BillingHistory() {
 
       {/* Invoices List */}
       <div className="space-y-4">
-        {filteredInvoices.map((invoice) => (
-          <Card key={invoice.id} className="p-4 md:p-6">
+        {loading ? (
+          <Card className="p-8 text-center">
+            <p className="text-slate-500">Loading invoices...</p>
+          </Card>
+        ) : (
+          filteredInvoices.map((invoice) => (
+            <Card key={invoice.id} className="p-4 md:p-6">
             <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
               <div className="space-y-3 flex-1">
                 <div className="flex items-center gap-2 flex-wrap">
@@ -287,8 +329,9 @@ export function BillingHistory() {
                 </Button>
                 {invoice.status === "pending" && (
                   <Button
-                    onClick={() => handlePayInvoice(invoice.id)}
+                    onClick={() => handlePayInvoice(invoice.invoiceId)}
                     className="flex-1 md:flex-none gap-2"
+                    disabled={payingId === invoice.invoiceId}
                   >
                     <CreditCard className="h-4 w-4" />
                     Pay Now
@@ -296,10 +339,11 @@ export function BillingHistory() {
                 )}
               </div>
             </div>
-          </Card>
-        ))}
+            </Card>
+          ))
+        )}
 
-        {filteredInvoices.length === 0 && (
+        {!loading && filteredInvoices.length === 0 && (
           <Card className="p-12 text-center">
             <Receipt className="h-12 w-12 text-slate-300 mx-auto mb-3" />
             <p className="text-slate-500">No invoices found</p>
@@ -406,9 +450,10 @@ export function BillingHistory() {
             {selectedInvoice?.status === "pending" && (
               <Button
                 onClick={() =>
-                  selectedInvoice && handlePayInvoice(selectedInvoice.id)
+                  selectedInvoice && handlePayInvoice(selectedInvoice.invoiceId)
                 }
                 className="gap-2"
+                disabled={payingId === selectedInvoice.invoiceId}
               >
                 <CreditCard className="h-4 w-4" />
                 Pay Now

@@ -13,6 +13,93 @@ const db = mysql.createPool({
   database: process.env.DB_NAME,
 });
 
+async function syncInvoiceForJob(jobId: number, createIfMissing: boolean) {
+  const [jobRows] = await db.execute(
+    "SELECT owner_id, workshop_id FROM jobs WHERE job_id = ? LIMIT 1",
+    [Number(jobId)]
+  );
+  const job = (jobRows as any[])[0];
+  if (!job) return;
+
+  const [invoiceRows] = await db.execute(
+    "SELECT invoice_id FROM invoices WHERE job_id = ? LIMIT 1",
+    [Number(jobId)]
+  );
+  let invoiceId = (invoiceRows as any[])[0]?.invoice_id as number | undefined;
+
+  if (!invoiceId && !createIfMissing) {
+    return;
+  }
+
+  const [partsRows] = await db.execute(
+    "SELECT name, quantity, unit_cost, total_cost FROM job_parts WHERE job_id = ?",
+    [Number(jobId)]
+  );
+
+  let subtotal = 0;
+  const items = (partsRows as any[]).map((part) => {
+    const qty = Number(part.quantity ?? 0);
+    const unit = Number(part.unit_cost ?? 0);
+    const total = Number(
+      part.total_cost ?? Math.round(qty * unit * 100) / 100
+    );
+    subtotal += total;
+    return {
+      description: String(part.name),
+      quantity: qty,
+      unit_price: unit,
+      total,
+    };
+  });
+
+  subtotal = Math.round(subtotal * 100) / 100;
+  const tax = 0;
+  const totalAmount = subtotal;
+
+  if (!invoiceId) {
+    const [invoiceResult] = await db.execute(
+      `INSERT INTO invoices
+       (job_id, owner_id, workshop_id, subtotal, tax, total_amount, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
+      [
+        Number(jobId),
+        Number(job.owner_id),
+        Number(job.workshop_id),
+        subtotal,
+        tax,
+        totalAmount,
+      ]
+    );
+    invoiceId = (invoiceResult as any).insertId as number;
+  } else {
+    await db.execute(
+      "UPDATE invoices SET subtotal = ?, tax = ?, total_amount = ? WHERE invoice_id = ?",
+      [subtotal, tax, totalAmount, Number(invoiceId)]
+    );
+  }
+
+  await db.execute("DELETE FROM invoice_items WHERE invoice_id = ?", [
+    Number(invoiceId),
+  ]);
+
+  if (items.length > 0) {
+    for (const item of items) {
+      await db.execute(
+        `INSERT INTO invoice_items
+         (invoice_id, description, quantity, unit_price, total)
+         VALUES (?, ?, ?, ?, ?)`,
+        [
+          Number(invoiceId),
+          item.description,
+          item.quantity,
+          item.unit_price,
+          item.total,
+        ]
+      );
+    }
+  }
+}
+
 function sendJson(res: http.ServerResponse, status: number, data: any) {
   res.writeHead(status, {
     "Content-Type": "application/json",
@@ -543,6 +630,121 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     }
   }
 
+  // GET /api/invoices?workshopId=5 or /api/invoices?ownerId=3
+  if (req.method === "GET" && url.pathname === "/api/invoices") {
+    const workshopId = url.searchParams.get("workshopId");
+    const ownerId = url.searchParams.get("ownerId");
+    if (!workshopId && !ownerId) {
+      return sendJson(res, 400, { error: "workshopId or ownerId required" });
+    }
+
+    const conditions: string[] = [];
+    const params: Array<string | number> = [];
+    if (workshopId) {
+      conditions.push("i.workshop_id = ?");
+      params.push(Number(workshopId));
+    }
+    if (ownerId) {
+      conditions.push("i.owner_id = ?");
+      params.push(Number(ownerId));
+    }
+
+    const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    try {
+      const [rows] = await db.execute(
+        `SELECT i.invoice_id, i.job_id, i.record_id, i.owner_id, i.workshop_id,
+                i.subtotal, i.tax, i.total_amount, i.status, i.created_at,
+                i.due_date, i.paid_date, i.notes,
+                owner.name AS owner_name,
+                mech.name AS mechanic_name,
+                j.service_type,
+                v.make, v.model, v.year, v.plate_number
+         FROM invoices i
+         LEFT JOIN jobs j ON j.job_id = i.job_id
+         LEFT JOIN users owner ON owner.user_id = i.owner_id
+         LEFT JOIN users mech ON mech.user_id = j.assigned_mechanic_id
+         LEFT JOIN vehicles v ON v.vehicle_id = j.vehicle_id
+         ${whereClause}
+         ORDER BY i.created_at DESC`,
+        params
+      );
+
+      const invoices = rows as any[];
+      if (invoices.length === 0) {
+        return sendJson(res, 200, { invoices: [] });
+      }
+
+      const invoiceIds = invoices.map((inv) => inv.invoice_id);
+      const placeholders = invoiceIds.map(() => "?").join(",");
+      const [itemRows] = await db.execute(
+        `SELECT item_id, invoice_id, description, quantity, unit_price, total
+         FROM invoice_items
+         WHERE invoice_id IN (${placeholders})`,
+        invoiceIds
+      );
+
+      const itemsByInvoice: Record<number, any[]> = {};
+      for (const item of itemRows as any[]) {
+        if (!itemsByInvoice[item.invoice_id]) itemsByInvoice[item.invoice_id] = [];
+        itemsByInvoice[item.invoice_id].push(item);
+      }
+
+      const withItems = invoices.map((invoice) => ({
+        ...invoice,
+        items: itemsByInvoice[invoice.invoice_id] ?? [],
+      }));
+
+      return sendJson(res, 200, { invoices: withItems });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/invoices/status
+  if (req.method === "POST" && url.pathname === "/api/invoices/status") {
+    const body = await readBody(req);
+    const { invoiceId, status, notes } = body;
+    const allowed = new Set([
+      "draft",
+      "pending",
+      "approved",
+      "rejected",
+      "paid",
+      "overdue",
+    ]);
+
+    if (!invoiceId || !status || !allowed.has(String(status))) {
+      return sendJson(res, 400, { error: "invoiceId and valid status required" });
+    }
+
+    try {
+      const updates: string[] = ["status = ?"];
+      const params: Array<string | number | null> = [String(status)];
+
+      if (String(status) === "paid") {
+        updates.push("paid_date = NOW()");
+      }
+
+      if (notes !== undefined) {
+        updates.push("notes = ?");
+        params.push(notes ? String(notes) : null);
+      }
+
+      params.push(Number(invoiceId));
+      await db.execute(
+        `UPDATE invoices SET ${updates.join(", ")} WHERE invoice_id = ?`,
+        params
+      );
+
+      return sendJson(res, 200, { ok: true });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
   // POST /api/jobs/assign
   if (req.method === "POST" && url.pathname === "/api/jobs/assign") {
     const body = await readBody(req);
@@ -612,6 +814,20 @@ if (req.method === "POST" && url.pathname === "/api/register") {
       );
 
       const partId = (result as any).insertId as number;
+
+      try {
+        const [jobRows] = await db.execute(
+          "SELECT status FROM jobs WHERE job_id = ? LIMIT 1",
+          [Number(jobId)]
+        );
+        const job = (jobRows as any[])[0];
+        if (job && String(job.status) === "completed") {
+          await syncInvoiceForJob(Number(jobId), false);
+        }
+      } catch (err) {
+        console.error("Invoice sync failed:", err);
+      }
+
       return sendJson(res, 201, {
         part_id: partId,
         job_id: Number(jobId),
@@ -634,7 +850,29 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     }
 
     try {
+      const [partRows] = await db.execute(
+        "SELECT job_id FROM job_parts WHERE part_id = ? LIMIT 1",
+        [Number(partId)]
+      );
+      const part = (partRows as any[])[0];
+
       await db.execute("DELETE FROM job_parts WHERE part_id = ?", [Number(partId)]);
+
+      if (part?.job_id) {
+        try {
+          const [jobRows] = await db.execute(
+            "SELECT status FROM jobs WHERE job_id = ? LIMIT 1",
+            [Number(part.job_id)]
+          );
+          const job = (jobRows as any[])[0];
+          if (job && String(job.status) === "completed") {
+            await syncInvoiceForJob(Number(part.job_id), false);
+          }
+        } catch (err) {
+          console.error("Invoice sync failed:", err);
+        }
+      }
+
       return sendJson(res, 200, { ok: true });
     } catch (err) {
       console.error(err);
@@ -716,6 +954,11 @@ if (req.method === "POST" && url.pathname === "/api/register") {
         "UPDATE jobs SET status = ? WHERE job_id = ?",
         [status, Number(jobId)]
       );
+
+      if (String(status) === "completed") {
+        await syncInvoiceForJob(Number(jobId), true);
+      }
+
       return sendJson(res, 200, { ok: true });
     } catch (err) {
       console.error(err);

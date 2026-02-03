@@ -1,8 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card } from "../ui/card";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
-import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Textarea } from "../ui/textarea";
 import {
@@ -36,6 +35,8 @@ import {
   Clock,
 } from "lucide-react";
 import { format } from "date-fns";
+import { apiListInvoices, apiUpdateInvoiceStatus, type InvoiceRecord } from "../api/invoices";
+import { getStoredUser } from "../api/session";
 
 interface InvoiceItem {
   description: string;
@@ -45,6 +46,7 @@ interface InvoiceItem {
 }
 
 interface Invoice {
+  invoiceId: number;
   id: string;
   jobId: string;
   customerName: string;
@@ -59,97 +61,144 @@ interface Invoice {
   notes?: string;
 }
 
-const mockInvoices: Invoice[] = [
-  {
-    id: "INV-001",
-    jobId: "J003",
-    customerName: "Mike Davis",
-    vehicle: "Ford F-150 2021",
-    mechanic: "Tom Wilson",
-    items: [
-      { description: "Tire Rotation Service", quantity: 1, unitPrice: 50, total: 50 },
-      { description: "Wheel Balancing", quantity: 4, unitPrice: 15, total: 60 },
-      { description: "Tire Pressure Check", quantity: 1, unitPrice: 10, total: 10 },
-    ],
-    subtotal: 120,
-    tax: 12,
-    total: 132,
-    status: "pending",
-    createdAt: new Date("2026-01-22T10:30:00"),
-    notes: "Standard tire rotation completed",
-  },
-  {
-    id: "INV-002",
-    jobId: "J004",
-    customerName: "Emily Brown",
-    vehicle: "Tesla Model 3 2022",
-    mechanic: "Alex Martinez",
-    items: [
-      { description: "Battery Diagnostic Test", quantity: 1, unitPrice: 150, total: 150 },
-      { description: "Software Update", quantity: 1, unitPrice: 100, total: 100 },
-      { description: "Battery Health Report", quantity: 1, unitPrice: 25, total: 25 },
-    ],
-    subtotal: 275,
-    tax: 27.5,
-    total: 302.5,
-    status: "approved",
-    createdAt: new Date("2026-01-21T16:45:00"),
-  },
-  {
-    id: "INV-003",
-    jobId: "J002",
-    customerName: "Sarah Johnson",
-    vehicle: "Honda Civic 2019",
-    mechanic: "Sarah Lee",
-    items: [
-      { description: "Transmission Fluid Replacement", quantity: 1, unitPrice: 200, total: 200 },
-      { description: "Transmission Filter", quantity: 1, unitPrice: 80, total: 80 },
-      { description: "Labor (8 hours)", quantity: 8, unitPrice: 95, total: 760 },
-      { description: "Transmission Diagnostic", quantity: 1, unitPrice: 120, total: 120 },
-    ],
-    subtotal: 1160,
-    tax: 116,
-    total: 1276,
-    status: "draft",
-    createdAt: new Date("2026-01-22T09:15:00"),
-    notes: "Waiting for parts confirmation",
-  },
-];
+const formatInvoiceId = (id: number) => `INV-${String(id).padStart(4, "0")}`;
+const formatJobId = (id: number | null) =>
+  id ? `J${String(id).padStart(3, "0")}` : "-";
+
+const formatVehicle = (invoice: InvoiceRecord) => {
+  const parts = [invoice.make, invoice.model, invoice.year]
+    .filter(Boolean)
+    .join(" ");
+  const plate = invoice.plate_number ? ` (${invoice.plate_number})` : "";
+  return `${parts || "Vehicle"}${plate}`;
+};
+
+const mapWorkshopStatus = (
+  status: InvoiceRecord["status"]
+): Invoice["status"] => {
+  if (
+    status === "draft" ||
+    status === "pending" ||
+    status === "approved" ||
+    status === "rejected" ||
+    status === "paid"
+  ) {
+    return status;
+  }
+  return "pending";
+};
 
 export function InvoiceManagement() {
-  const [invoices, setInvoices] = useState<Invoice[]>(mockInvoices);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [statusUpdatingId, setStatusUpdatingId] = useState<number | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [detailsDialogOpen, setDetailsDialogOpen] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [rejectionReason, setRejectionReason] = useState("");
 
+  const loadInvoices = async () => {
+    const user = getStoredUser();
+    if (!user || !user.workshop_id) {
+      setError("Workshop account not linked to a workshop.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await apiListInvoices({ workshopId: user.workshop_id });
+      const mapped = data.map((inv) => {
+        const items = (inv.items ?? []).map((item) => {
+          const qty = Number(item.quantity ?? 0);
+          const unit = Number(item.unit_price ?? 0);
+          const total = Number(item.total ?? qty * unit);
+          return {
+            description: item.description,
+            quantity: qty,
+            unitPrice: unit,
+            total,
+          };
+        });
+        const computedSubtotal = items.reduce((sum, item) => sum + item.total, 0);
+        const subtotal = Number(inv.subtotal ?? computedSubtotal);
+        const tax = Number(inv.tax ?? 0);
+        const total = Number(inv.total_amount ?? subtotal + tax);
+        return {
+          invoiceId: inv.invoice_id,
+          id: formatInvoiceId(inv.invoice_id),
+          jobId: formatJobId(inv.job_id ?? null),
+          customerName: inv.owner_name ?? "Customer",
+          vehicle: formatVehicle(inv),
+          mechanic: inv.mechanic_name ?? "Unassigned",
+          items,
+          subtotal,
+          tax,
+          total,
+          status: mapWorkshopStatus(inv.status),
+          createdAt: new Date(inv.created_at),
+          notes: inv.notes ?? undefined,
+        } as Invoice;
+      });
+      setInvoices(mapped);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to load invoices");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadInvoices();
+  }, []);
+
   const filteredInvoices = invoices.filter(
     (inv) => filterStatus === "all" || inv.status === filterStatus
   );
 
-  const handleApprove = (invoiceId: string) => {
-    setInvoices(
-      invoices.map((inv) =>
-        inv.id === invoiceId ? { ...inv, status: "approved" as const } : inv
-      )
-    );
-    setDetailsDialogOpen(false);
+  const handleApprove = async (invoiceId: number) => {
+    if (statusUpdatingId) return;
+    setStatusUpdatingId(invoiceId);
+    setError(null);
+    try {
+      await apiUpdateInvoiceStatus({ invoiceId, status: "approved" });
+      setInvoices((prev) =>
+        prev.map((inv) =>
+          inv.invoiceId === invoiceId ? { ...inv, status: "approved" } : inv
+        )
+      );
+      setDetailsDialogOpen(false);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to approve invoice");
+    } finally {
+      setStatusUpdatingId(null);
+    }
   };
 
-  const handleReject = (invoiceId: string) => {
-    setInvoices(
-      invoices.map((inv) =>
-        inv.id === invoiceId
-          ? {
-              ...inv,
-              status: "rejected" as const,
-              notes: rejectionReason || inv.notes,
-            }
-          : inv
-      )
-    );
-    setRejectionReason("");
-    setDetailsDialogOpen(false);
+  const handleReject = async (invoiceId: number) => {
+    if (statusUpdatingId) return;
+    setStatusUpdatingId(invoiceId);
+    setError(null);
+    try {
+      await apiUpdateInvoiceStatus({
+        invoiceId,
+        status: "rejected",
+        notes: rejectionReason || null,
+      });
+      setInvoices((prev) =>
+        prev.map((inv) =>
+          inv.invoiceId === invoiceId
+            ? { ...inv, status: "rejected", notes: rejectionReason || inv.notes }
+            : inv
+        )
+      );
+      setRejectionReason("");
+      setDetailsDialogOpen(false);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to reject invoice");
+    } finally {
+      setStatusUpdatingId(null);
+    }
   };
 
   const getStatusColor = (status: string) => {
@@ -184,6 +233,7 @@ export function InvoiceManagement() {
         <p className="text-slate-600 mt-1">
           Review, validate, and finalize customer invoices
         </p>
+        {error && <p className="text-sm text-red-500 mt-2">{error}</p>}
       </div>
 
       {/* Stats */}
@@ -238,8 +288,13 @@ export function InvoiceManagement() {
 
       {/* Invoices List */}
       <div className="space-y-4">
-        {filteredInvoices.map((invoice) => (
-          <Card key={invoice.id} className="p-4 md:p-6">
+        {loading ? (
+          <Card className="p-8 text-center">
+            <p className="text-slate-500">Loading invoices...</p>
+          </Card>
+        ) : (
+          filteredInvoices.map((invoice) => (
+            <Card key={invoice.id} className="p-4 md:p-6">
             <div className="space-y-4">
               <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
                 <div className="space-y-3 flex-1">
@@ -294,8 +349,9 @@ export function InvoiceManagement() {
                   {invoice.status === "pending" && (
                     <>
                       <Button
-                        onClick={() => handleApprove(invoice.id)}
+                        onClick={() => handleApprove(invoice.invoiceId)}
                         className="flex-1 md:flex-none gap-2"
+                        disabled={statusUpdatingId === invoice.invoiceId}
                       >
                         <CheckCircle className="h-4 w-4" />
                         Approve
@@ -305,10 +361,11 @@ export function InvoiceManagement() {
                 </div>
               </div>
             </div>
-          </Card>
-        ))}
+            </Card>
+          ))
+        )}
 
-        {filteredInvoices.length === 0 && (
+        {!loading && filteredInvoices.length === 0 && (
           <Card className="p-12 text-center">
             <FileText className="h-12 w-12 text-slate-300 mx-auto mb-3" />
             <p className="text-slate-500">No invoices found</p>
@@ -449,15 +506,21 @@ export function InvoiceManagement() {
                 </Button>
                 <Button
                   variant="destructive"
-                  onClick={() => selectedInvoice && handleReject(selectedInvoice.id)}
+                  onClick={() =>
+                    selectedInvoice && handleReject(selectedInvoice.invoiceId)
+                  }
                   className="gap-2"
+                  disabled={statusUpdatingId === selectedInvoice.invoiceId}
                 >
                   <XCircle className="h-4 w-4" />
                   Reject
                 </Button>
                 <Button
-                  onClick={() => selectedInvoice && handleApprove(selectedInvoice.id)}
+                  onClick={() =>
+                    selectedInvoice && handleApprove(selectedInvoice.invoiceId)
+                  }
                   className="gap-2"
+                  disabled={statusUpdatingId === selectedInvoice.invoiceId}
                 >
                   <CheckCircle className="h-4 w-4" />
                   Approve
