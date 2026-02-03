@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card } from "../ui/card";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
@@ -12,44 +12,25 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../ui/select";
-import { Calendar } from "../ui/calendar";
-import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
-import { Calendar as CalendarIcon, Clock, CheckCircle, AlertCircle } from "lucide-react";
+import { Clock, CheckCircle, AlertCircle } from "lucide-react";
 import { format } from "date-fns";
+import {
+  apiCreateBooking,
+  apiListBookings,
+  apiListVehicles,
+  apiListWorkshops,
+  type Booking,
+  type Vehicle,
+  type Workshop,
+} from "../api/bookings";
+import { getStoredUser } from "../api/session";
 
-interface ServiceRequest {
-  id: string;
-  vehicle: string;
-  serviceType: string;
-  preferredDate: Date;
-  preferredTime: string;
-  description: string;
-  status: "pending" | "confirmed" | "in-progress" | "completed";
-  createdAt: Date;
-}
-
-const mockRequests: ServiceRequest[] = [
-  {
-    id: "SR001",
-    vehicle: "2020 Toyota Camry (ABC-1234)",
-    serviceType: "Oil Change",
-    preferredDate: new Date("2026-01-25"),
-    preferredTime: "10:00 AM",
-    description: "Regular oil change service",
-    status: "confirmed",
-    createdAt: new Date("2026-01-20"),
-  },
-  {
-    id: "SR002",
-    vehicle: "2019 Honda Civic (XYZ-5678)",
-    serviceType: "Brake Inspection",
-    preferredDate: new Date("2026-01-28"),
-    preferredTime: "2:00 PM",
-    description: "Brake warning light is on",
-    status: "pending",
-    createdAt: new Date("2026-01-22"),
-  },
-];
+type BookingStatus =
+  | "pending"
+  | "confirmed"
+  | "rejected"
+  | "in-progress"
+  | "completed";
 
 const serviceTypes = [
   "Oil Change",
@@ -77,40 +58,124 @@ const timeSlots = [
 ];
 
 export function ServiceRequest() {
-  const [requests, setRequests] = useState<ServiceRequest[]>(mockRequests);
+  const [requests, setRequests] = useState<Booking[]>([]);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [workshops, setWorkshops] = useState<Workshop[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [selectedVehicle, setSelectedVehicle] = useState("");
+  const [selectedWorkshop, setSelectedWorkshop] = useState("");
   const [serviceType, setServiceType] = useState("");
-  const [preferredDate, setPreferredDate] = useState<Date>();
+  const [preferredDate, setPreferredDate] = useState("");
   const [preferredTime, setPreferredTime] = useState("");
   const [description, setDescription] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = () => {
-    if (!selectedVehicle || !serviceType || !preferredDate || !preferredTime) {
+  useEffect(() => {
+    const user = getStoredUser();
+    if (!user) {
+      setError("Please log in again.");
+      return;
+    }
+    if (!user.owner_id) {
+      setError("Owner profile not found. Please log in again.");
       return;
     }
 
-    const newRequest: ServiceRequest = {
-      id: `SR${(requests.length + 1).toString().padStart(3, "0")}`,
-      vehicle: selectedVehicle,
+    setLoading(true);
+    setError(null);
+
+    Promise.all([
+      apiListVehicles(user.owner_id),
+      apiListWorkshops(),
+      apiListBookings({ ownerId: user.owner_id }),
+    ])
+      .then(([vehicleList, workshopList, bookingList]) => {
+        setVehicles(vehicleList);
+        setWorkshops(workshopList);
+        setRequests(bookingList);
+      })
+      .catch((err: any) => {
+        setError(err?.message ?? "Failed to load data");
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  const getVehicleLabel = (booking: Booking) => {
+    const found = vehicles.find((v) => v.vehicle_id === booking.vehicle_id);
+    if (found) {
+      const year = found.year ? `${found.year} ` : "";
+      const make = found.make ?? "";
+      const model = found.model ?? "";
+      const plate = found.plate_number ? ` (${found.plate_number})` : "";
+      return `${year}${make} ${model}`.trim() + plate;
+    }
+
+    if (booking.make || booking.model || booking.plate_number) {
+      const year = booking.year ? `${booking.year} ` : "";
+      const make = booking.make ?? "";
+      const model = booking.model ?? "";
+      const plate = booking.plate_number ? ` (${booking.plate_number})` : "";
+      return `${year}${make} ${model}`.trim() + plate;
+    }
+
+    return "Vehicle";
+  };
+
+  const handleSubmit = () => {
+    if (
+      !selectedWorkshop ||
+      !selectedVehicle ||
+      !serviceType ||
+      !preferredDate ||
+      !preferredTime
+    ) {
+      return;
+    }
+
+    const user = getStoredUser();
+    if (!user) {
+      setError("Please log in again.");
+      return;
+    }
+    if (!user.owner_id) {
+      setError("Owner profile not found. Please log in again.");
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    apiCreateBooking({
+      ownerId: user.owner_id,
+      workshopId: Number(selectedWorkshop),
+      vehicleId: Number(selectedVehicle),
+      customerName: user.name,
+      customerEmail: user.email,
       serviceType,
       preferredDate,
       preferredTime,
-      description,
-      status: "pending",
-      createdAt: new Date(),
-    };
-
-    setRequests([newRequest, ...requests]);
-    setShowForm(false);
-    setSelectedVehicle("");
-    setServiceType("");
-    setPreferredDate(undefined);
-    setPreferredTime("");
-    setDescription("");
+      description: description || null,
+    })
+      .then(() => apiListBookings({ ownerId: user.owner_id }))
+      .then((bookingList) => {
+        setRequests(bookingList);
+        setShowForm(false);
+        setSelectedVehicle("");
+        setSelectedWorkshop("");
+        setServiceType("");
+        setPreferredDate(undefined);
+        setPreferredTime("");
+        setDescription("");
+      })
+      .catch((err: any) => {
+        setError(err?.message ?? "Failed to create request");
+      })
+      .finally(() => setSubmitting(false));
   };
 
-  const getStatusColor = (status: string) => {
+  const getStatusColor = (status: BookingStatus) => {
     switch (status) {
       case "pending":
         return "bg-yellow-100 text-yellow-700 border-yellow-200";
@@ -118,6 +183,8 @@ export function ServiceRequest() {
         return "bg-green-100 text-green-700 border-green-200";
       case "in-progress":
         return "bg-blue-100 text-blue-700 border-blue-200";
+      case "rejected":
+        return "bg-red-100 text-red-700 border-red-200";
       case "completed":
         return "bg-slate-100 text-slate-700 border-slate-200";
       default:
@@ -125,7 +192,7 @@ export function ServiceRequest() {
     }
   };
 
-  const getStatusIcon = (status: string) => {
+  const getStatusIcon = (status: BookingStatus) => {
     switch (status) {
       case "pending":
         return <AlertCircle className="h-4 w-4" />;
@@ -134,6 +201,8 @@ export function ServiceRequest() {
         return <Clock className="h-4 w-4" />;
       case "completed":
         return <CheckCircle className="h-4 w-4" />;
+      case "rejected":
+        return <AlertCircle className="h-4 w-4" />;
       default:
         return null;
     }
@@ -164,18 +233,48 @@ export function ServiceRequest() {
           <h3 className="text-lg font-semibold mb-4">New Service Request</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="workshop">Select Workshop</Label>
+              <Select value={selectedWorkshop} onValueChange={setSelectedWorkshop}>
+                <SelectTrigger id="workshop">
+                  <SelectValue placeholder="Choose a workshop" />
+                </SelectTrigger>
+                <SelectContent>
+                  {workshops.map((workshop) => (
+                    <SelectItem
+                      key={workshop.workshop_id}
+                      value={String(workshop.workshop_id)}
+                    >
+                      {workshop.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2 md:col-span-2">
               <Label htmlFor="vehicle">Select Vehicle</Label>
               <Select value={selectedVehicle} onValueChange={setSelectedVehicle}>
                 <SelectTrigger id="vehicle">
                   <SelectValue placeholder="Choose a vehicle" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="2020 Toyota Camry (ABC-1234)">
-                    2020 Toyota Camry (ABC-1234)
-                  </SelectItem>
-                  <SelectItem value="2019 Honda Civic (XYZ-5678)">
-                    2019 Honda Civic (XYZ-5678)
-                  </SelectItem>
+                  {vehicles.map((vehicle) => {
+                    const year = vehicle.year ? `${vehicle.year} ` : "";
+                    const make = vehicle.make ?? "";
+                    const model = vehicle.model ?? "";
+                    const plate = vehicle.plate_number
+                      ? ` (${vehicle.plate_number})`
+                      : "";
+                    const label = `${year}${make} ${model}`.trim() + plate;
+                    return (
+                      <SelectItem
+                        key={vehicle.vehicle_id}
+                        value={String(vehicle.vehicle_id)}
+                      >
+                        {label || `Vehicle ${vehicle.vehicle_id}`}
+                      </SelectItem>
+                    );
+                  })}
                 </SelectContent>
               </Select>
             </div>
@@ -197,31 +296,14 @@ export function ServiceRequest() {
             </div>
 
             <div className="space-y-2">
-              <Label>Preferred Date</Label>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    className="w-full justify-start text-left font-normal"
-                  >
-                    <CalendarIcon className="mr-2 h-4 w-4" />
-                    {preferredDate ? (
-                      format(preferredDate, "PPP")
-                    ) : (
-                      <span>Pick a date</span>
-                    )}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-auto p-0">
-                  <Calendar
-                    mode="single"
-                    selected={preferredDate}
-                    onSelect={setPreferredDate}
-                    disabled={(date) => date < new Date()}
-                    initialFocus
-                  />
-                </PopoverContent>
-              </Popover>
+              <Label htmlFor="preferredDate">Preferred Date</Label>
+              <Input
+                id="preferredDate"
+                type="date"
+                value={preferredDate}
+                min={format(new Date(), "yyyy-MM-dd")}
+                onChange={(e) => setPreferredDate(e.target.value)}
+              />
             </div>
 
             <div className="space-y-2">
@@ -263,26 +345,34 @@ export function ServiceRequest() {
             <Button
               onClick={handleSubmit}
               disabled={
-                !selectedVehicle || !serviceType || !preferredDate || !preferredTime
+                !selectedWorkshop ||
+                !selectedVehicle ||
+                !serviceType ||
+                !preferredDate ||
+                !preferredTime ||
+                submitting
               }
               className="flex-1"
             >
-              Submit Request
+              {submitting ? "Submitting..." : "Submit Request"}
             </Button>
           </div>
         </Card>
       )}
 
+      {error && <p className="text-sm text-red-500">{error}</p>}
+
       {/* Requests List */}
       <div className="space-y-4">
         <h3 className="font-semibold text-lg">Your Requests</h3>
+        {loading && <p className="text-sm text-muted-foreground">Loading...</p>}
         {requests.map((request) => (
-          <Card key={request.id} className="p-4 md:p-6">
+          <Card key={request.booking_id} className="p-4 md:p-6">
             <div className="space-y-4">
               <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
                 <div className="space-y-3 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <h4 className="font-semibold text-lg">#{request.id}</h4>
+                    <h4 className="font-semibold text-lg">#{request.booking_id}</h4>
                     <Badge className={getStatusColor(request.status)}>
                       {getStatusIcon(request.status)}
                       <span className="ml-1">{request.status}</span>
@@ -292,21 +382,23 @@ export function ServiceRequest() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
                     <div>
                       <span className="text-slate-500">Vehicle: </span>
-                      <span className="font-medium">{request.vehicle}</span>
+                      <span className="font-medium">{getVehicleLabel(request)}</span>
                     </div>
                     <div>
                       <span className="text-slate-500">Service: </span>
-                      <span className="font-medium">{request.serviceType}</span>
+                      <span className="font-medium">{request.service_type}</span>
                     </div>
                     <div>
                       <span className="text-slate-500">Preferred Date: </span>
                       <span className="font-medium">
-                        {format(request.preferredDate, "MMM dd, yyyy")}
+                        {request.preferred_date
+                          ? format(new Date(request.preferred_date), "MMM dd, yyyy")
+                          : "-"}
                       </span>
                     </div>
                     <div>
                       <span className="text-slate-500">Preferred Time: </span>
-                      <span className="font-medium">{request.preferredTime}</span>
+                      <span className="font-medium">{request.preferred_time}</span>
                     </div>
                     {request.description && (
                       <div className="md:col-span-2">
@@ -332,7 +424,7 @@ export function ServiceRequest() {
           </Card>
         ))}
 
-        {requests.length === 0 && (
+        {!loading && requests.length === 0 && (
           <Card className="p-12 text-center">
             <p className="text-slate-500 mb-4">No service requests yet</p>
             <Button onClick={() => setShowForm(true)}>

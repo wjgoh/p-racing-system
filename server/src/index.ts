@@ -46,7 +46,7 @@ const server = http.createServer(async (req, res) => {
 // POST /api/register
 if (req.method === "POST" && url.pathname === "/api/register") {
   const body = await readBody(req);
-  const { name, email, password, role, vehicles } = body;
+  const { name, email, password, role, vehicles, workshop, workshopId } = body;
 
   if (!name || !email || !password) {
     return sendJson(res, 400, { error: "name, email, password required" });
@@ -57,29 +57,66 @@ if (req.method === "POST" && url.pathname === "/api/register") {
   const passwordHash = await bcrypt.hash(password, 10);
 
   try {
+    let workshopIdForUser: number | null = null;
+
+    if (userRole === "WORKSHOP") {
+      const workshopName = String(workshop?.name ?? "").trim();
+      if (!workshopName) {
+        return sendJson(res, 400, { error: "workshop name required" });
+      }
+
+      const [workshopResult] = await db.execute(
+        `INSERT INTO workshops (name, email, phone, address)
+         VALUES (?, ?, ?, ?)`,
+        [
+          workshopName,
+          workshop?.email ?? email ?? null,
+          workshop?.phone ?? null,
+          workshop?.address ?? null,
+        ]
+      );
+
+      workshopIdForUser = (workshopResult as any).insertId as number;
+    } else if (userRole === "MECHANIC" && workshopId) {
+      const parsedWorkshopId = Number(workshopId);
+      if (!Number.isNaN(parsedWorkshopId)) {
+        workshopIdForUser = parsedWorkshopId;
+      }
+    }
+
     // 1) create user
     const [result] = await db.execute(
-    `INSERT INTO users (name, email, password_hash, role)
-    VALUES (?, ?, ?, ?)`,
-    [name, email, passwordHash, userRole]
+    `INSERT INTO users (name, email, password_hash, role, workshop_id)
+    VALUES (?, ?, ?, ?, ?)`,
+    [name, email, passwordHash, userRole, workshopIdForUser]
     );
 
     const userId = (result as any).insertId as number;
+    let ownerId: number | null = null;
 
-    // 2) OPTIONAL: insert vehicles if you have a vehicles table
+    // 2) If OWNER, create vehicle_owners row
+    if (userRole === "OWNER") {
+      const [ownerResult] = await db.execute(
+        `INSERT INTO vehicle_owners (user_id, phone) VALUES (?, ?)`,
+        [userId, null]
+      );
+      ownerId = (ownerResult as any).insertId as number;
+    }
+
+    // 3) OPTIONAL: insert vehicles if you have a vehicles table
     // If you DON'T have vehicles table yet, skip this whole block.
-    if (Array.isArray(vehicles) && vehicles.length > 0) {
+    if (userRole === "OWNER" && ownerId && Array.isArray(vehicles) && vehicles.length > 0) {
       for (const v of vehicles) {
         // adjust column names to your vehicles table schema
         await db.execute(
           `INSERT INTO vehicles (owner_id, plate_number, make, model, year, color)
            VALUES (?, ?, ?, ?, ?, ?)`,
-          [userId, v.plateNumber, v.make, v.model, v.year, v.color]
+          [ownerId, v.plateNumber, v.make, v.model, v.year, v.color]
         );
       }
     }
 
-    return sendJson(res, 201, { user_id: userId });
+    return sendJson(res, 201, { user_id: userId, owner_id: ownerId, workshop_id: workshopIdForUser });
   } catch (err: any) {
     // duplicate email
     if (String(err?.code) === "ER_DUP_ENTRY") {
@@ -89,6 +126,19 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     return sendJson(res, 500, { error: "Server error" });
   }
 }
+  // GET /api/workshops
+  if (req.method === "GET" && url.pathname === "/api/workshops") {
+    try {
+      const [rows] = await db.execute(
+        "SELECT workshop_id, name FROM workshops ORDER BY name"
+      );
+      return sendJson(res, 200, { workshops: rows });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
   // POST /api/login
   if (req.method === "POST" && url.pathname === "/api/login") {
     const body = await readBody(req);
@@ -100,7 +150,11 @@ if (req.method === "POST" && url.pathname === "/api/register") {
 
     // IMPORTANT: adjust column names if your table differs
     const [rows] = await db.execute(
-      "SELECT user_id, name, email, password_hash, role FROM users WHERE email = ? LIMIT 1",
+      `SELECT u.user_id, u.name, u.email, u.password_hash, u.role, u.workshop_id,
+              vo.owner_id
+       FROM users u
+       LEFT JOIN vehicle_owners vo ON vo.user_id = u.user_id
+       WHERE u.email = ? LIMIT 1`,
       [email]
     );
 
@@ -115,11 +169,181 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     return sendJson(res, 200, {
       user: {
         user_id: user.user_id,
+        owner_id: user.owner_id ?? null,
         name: user.name,
         email: user.email,
         role: user.role,
+        workshop_id: user.workshop_id ?? null,
       },
     });
+  }
+
+  // GET /api/vehicles?ownerId=123 (ownerId = vehicle_owners.owner_id)
+  if (req.method === "GET" && url.pathname === "/api/vehicles") {
+    const ownerId = url.searchParams.get("ownerId");
+    if (!ownerId) {
+      return sendJson(res, 400, { error: "ownerId required" });
+    }
+    try {
+      const [rows] = await db.execute(
+        `SELECT vehicle_id, owner_id, plate_number, make, model, year, color
+         FROM vehicles
+         WHERE owner_id = ?
+         ORDER BY vehicle_id DESC`,
+        [Number(ownerId)]
+      );
+      return sendJson(res, 200, { vehicles: rows });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/vehicles
+  if (req.method === "POST" && url.pathname === "/api/vehicles") {
+    const body = await readBody(req);
+    const { ownerId, plateNumber, make, model, year, color } = body;
+
+    if (!ownerId || !plateNumber) {
+      return sendJson(res, 400, { error: "ownerId and plateNumber required" });
+    }
+
+    try {
+      const [result] = await db.execute(
+        `INSERT INTO vehicles (owner_id, plate_number, make, model, year, color)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          Number(ownerId),
+          plateNumber,
+          make ?? null,
+          model ?? null,
+          year ?? null,
+          color ?? null,
+        ]
+      );
+      const vehicleId = (result as any).insertId as number;
+      return sendJson(res, 201, { vehicle_id: vehicleId });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // GET /api/bookings?ownerId=123 or /api/bookings?workshopId=5
+  if (req.method === "GET" && url.pathname === "/api/bookings") {
+    const ownerId = url.searchParams.get("ownerId");
+    const workshopId = url.searchParams.get("workshopId");
+    const status = url.searchParams.get("status");
+
+    if (!ownerId && !workshopId) {
+      return sendJson(res, 400, { error: "ownerId or workshopId required" });
+    }
+
+    const conditions: string[] = [];
+    const params: Array<string | number> = [];
+    if (ownerId) {
+      conditions.push("b.owner_id = ?");
+      params.push(Number(ownerId));
+    }
+    if (workshopId) {
+      conditions.push("b.workshop_id = ?");
+      params.push(Number(workshopId));
+    }
+    if (status) {
+      conditions.push("b.status = ?");
+      params.push(status);
+    }
+
+    const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    try {
+      const [rows] = await db.execute(
+        `SELECT b.booking_id, b.owner_id, b.workshop_id, b.vehicle_id,
+                b.customer_name, b.customer_email, b.customer_phone,
+                b.service_type, b.preferred_date, b.preferred_time,
+                b.description, b.status, b.created_at,
+                v.make, v.model, v.plate_number, v.year, v.color
+         FROM service_bookings b
+         LEFT JOIN vehicles v ON b.vehicle_id = v.vehicle_id
+         ${whereClause}
+         ORDER BY b.created_at DESC`,
+        params
+      );
+      return sendJson(res, 200, { bookings: rows });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/bookings
+  if (req.method === "POST" && url.pathname === "/api/bookings") {
+    const body = await readBody(req);
+    const {
+      ownerId,
+      workshopId,
+      vehicleId,
+      customerName,
+      customerEmail,
+      customerPhone,
+      serviceType,
+      preferredDate,
+      preferredTime,
+      description,
+    } = body;
+
+    if (!ownerId || !workshopId || !serviceType || !preferredDate || !preferredTime) {
+      return sendJson(res, 400, { error: "ownerId, workshopId, serviceType, preferredDate, preferredTime required" });
+    }
+
+    try {
+      const [result] = await db.execute(
+        `INSERT INTO service_bookings
+          (owner_id, workshop_id, vehicle_id, customer_name, customer_email, customer_phone,
+           service_type, preferred_date, preferred_time, description, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        [
+          Number(ownerId),
+          Number(workshopId),
+          vehicleId ? Number(vehicleId) : null,
+          customerName ?? null,
+          customerEmail ?? null,
+          customerPhone ?? null,
+          serviceType,
+          preferredDate,
+          preferredTime,
+          description ?? null,
+        ]
+      );
+
+      const bookingId = (result as any).insertId as number;
+      return sendJson(res, 201, { booking_id: bookingId });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/bookings/status
+  if (req.method === "POST" && url.pathname === "/api/bookings/status") {
+    const body = await readBody(req);
+    const { bookingId, status } = body;
+
+    const allowed = new Set(["pending", "confirmed", "rejected", "in-progress", "completed"]);
+    if (!bookingId || !status || !allowed.has(String(status))) {
+      return sendJson(res, 400, { error: "bookingId and valid status required" });
+    }
+
+    try {
+      await db.execute(
+        "UPDATE service_bookings SET status = ? WHERE booking_id = ?",
+        [status, Number(bookingId)]
+      );
+      return sendJson(res, 200, { ok: true });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
   }
 
   return sendJson(res, 404, { error: "Not found" });
