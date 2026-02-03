@@ -49,9 +49,8 @@ export function LoginForm({
         case "MECHANIC":
           onMechanicLogin();
           break;
+        case "WORKSHOP":
         case "ADVISOR":
-          // You named it onWorkshopLogin; if this is for advisor/workshop staff,
-          // map it here. Or rename the prop later.
           onWorkshopLogin();
           break;
         case "OWNER":
