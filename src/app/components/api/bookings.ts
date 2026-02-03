@@ -43,6 +43,24 @@ export async function apiListVehicles(ownerId: number): Promise<Vehicle[]> {
   return (data?.vehicles ?? []) as Vehicle[];
 }
 
+export async function apiCreateVehicle(payload: {
+  ownerId: number;
+  plateNumber: string;
+  make?: string | null;
+  model?: string | null;
+  year?: string | null;
+  color?: string | null;
+}) {
+  const res = await fetch(`${API_BASE}/api/vehicles`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error ?? "Failed to create vehicle");
+  return data;
+}
+
 export async function apiListWorkshops(): Promise<Workshop[]> {
   const res = await fetch(`${API_BASE}/api/workshops`);
   const data = await res.json();

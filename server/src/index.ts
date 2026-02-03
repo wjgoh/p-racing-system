@@ -92,21 +92,31 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     );
 
     const userId = (result as any).insertId as number;
+    let ownerId: number | null = null;
 
-    // 2) OPTIONAL: insert vehicles if you have a vehicles table
+    // 2) If OWNER, create vehicle_owners row
+    if (userRole === "OWNER") {
+      const [ownerResult] = await db.execute(
+        `INSERT INTO vehicle_owners (user_id, phone) VALUES (?, ?)`,
+        [userId, null]
+      );
+      ownerId = (ownerResult as any).insertId as number;
+    }
+
+    // 3) OPTIONAL: insert vehicles if you have a vehicles table
     // If you DON'T have vehicles table yet, skip this whole block.
-    if (userRole === "OWNER" && Array.isArray(vehicles) && vehicles.length > 0) {
+    if (userRole === "OWNER" && ownerId && Array.isArray(vehicles) && vehicles.length > 0) {
       for (const v of vehicles) {
         // adjust column names to your vehicles table schema
         await db.execute(
           `INSERT INTO vehicles (owner_id, plate_number, make, model, year, color)
            VALUES (?, ?, ?, ?, ?, ?)`,
-          [userId, v.plateNumber, v.make, v.model, v.year, v.color]
+          [ownerId, v.plateNumber, v.make, v.model, v.year, v.color]
         );
       }
     }
 
-    return sendJson(res, 201, { user_id: userId, workshop_id: workshopIdForUser });
+    return sendJson(res, 201, { user_id: userId, owner_id: ownerId, workshop_id: workshopIdForUser });
   } catch (err: any) {
     // duplicate email
     if (String(err?.code) === "ER_DUP_ENTRY") {
@@ -140,7 +150,11 @@ if (req.method === "POST" && url.pathname === "/api/register") {
 
     // IMPORTANT: adjust column names if your table differs
     const [rows] = await db.execute(
-      "SELECT user_id, name, email, password_hash, role, workshop_id FROM users WHERE email = ? LIMIT 1",
+      `SELECT u.user_id, u.name, u.email, u.password_hash, u.role, u.workshop_id,
+              vo.owner_id
+       FROM users u
+       LEFT JOIN vehicle_owners vo ON vo.user_id = u.user_id
+       WHERE u.email = ? LIMIT 1`,
       [email]
     );
 
@@ -155,6 +169,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     return sendJson(res, 200, {
       user: {
         user_id: user.user_id,
+        owner_id: user.owner_id ?? null,
         name: user.name,
         email: user.email,
         role: user.role,
@@ -163,7 +178,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     });
   }
 
-  // GET /api/vehicles?ownerId=123
+  // GET /api/vehicles?ownerId=123 (ownerId = vehicle_owners.owner_id)
   if (req.method === "GET" && url.pathname === "/api/vehicles") {
     const ownerId = url.searchParams.get("ownerId");
     if (!ownerId) {
@@ -178,6 +193,36 @@ if (req.method === "POST" && url.pathname === "/api/register") {
         [Number(ownerId)]
       );
       return sendJson(res, 200, { vehicles: rows });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/vehicles
+  if (req.method === "POST" && url.pathname === "/api/vehicles") {
+    const body = await readBody(req);
+    const { ownerId, plateNumber, make, model, year, color } = body;
+
+    if (!ownerId || !plateNumber) {
+      return sendJson(res, 400, { error: "ownerId and plateNumber required" });
+    }
+
+    try {
+      const [result] = await db.execute(
+        `INSERT INTO vehicles (owner_id, plate_number, make, model, year, color)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          Number(ownerId),
+          plateNumber,
+          make ?? null,
+          model ?? null,
+          year ?? null,
+          color ?? null,
+        ]
+      );
+      const vehicleId = (result as any).insertId as number;
+      return sendJson(res, 201, { vehicle_id: vehicleId });
     } catch (err) {
       console.error(err);
       return sendJson(res, 500, { error: "Server error" });

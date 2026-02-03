@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card } from "../ui/card";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
@@ -11,90 +11,71 @@ import {
   DialogTitle,
   DialogFooter,
 } from "../ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../ui/select";
-import { Car, Plus, Calendar, Gauge } from "lucide-react";
-
-interface Vehicle {
-  id: string;
-  make: string;
-  model: string;
-  year: number;
-  color: string;
-  licensePlate: string;
-  vin: string;
-  mileage: number;
-  lastService?: Date;
-  nextService?: Date;
-}
-
-const mockVehicles: Vehicle[] = [
-  {
-    id: "V001",
-    make: "Toyota",
-    model: "Camry",
-    year: 2020,
-    color: "Silver",
-    licensePlate: "ABC-1234",
-    vin: "1HGBH41JXMN109186",
-    mileage: 45000,
-    lastService: new Date("2025-12-15"),
-    nextService: new Date("2026-06-15"),
-  },
-  {
-    id: "V002",
-    make: "Honda",
-    model: "Civic",
-    year: 2019,
-    color: "Blue",
-    licensePlate: "XYZ-5678",
-    vin: "2HGFC2F59KH123456",
-    mileage: 62000,
-    lastService: new Date("2025-11-20"),
-    nextService: new Date("2026-05-20"),
-  },
-];
+import { Car, Plus } from "lucide-react";
+import { apiCreateVehicle, apiListVehicles, type Vehicle } from "../api/bookings";
+import { getStoredUser } from "../api/session";
 
 export function MyVehicles() {
-  const [vehicles, setVehicles] = useState<Vehicle[]>(mockVehicles);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [newVehicle, setNewVehicle] = useState({
     make: "",
     model: "",
     year: "",
     color: "",
-    licensePlate: "",
-    vin: "",
-    mileage: "",
+    plateNumber: "",
   });
 
+  useEffect(() => {
+    const user = getStoredUser();
+    if (!user) {
+      setError("Please log in again.");
+      return;
+    }
+    if (!user.owner_id) {
+      setError("Owner profile not found. Please log in again.");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    apiListVehicles(user.owner_id)
+      .then((list) => setVehicles(list))
+      .catch((err: any) => setError(err?.message ?? "Failed to load vehicles"))
+      .finally(() => setLoading(false));
+  }, []);
+
   const handleAddVehicle = () => {
-    const vehicle: Vehicle = {
-      id: `V${(vehicles.length + 1).toString().padStart(3, "0")}`,
-      make: newVehicle.make,
-      model: newVehicle.model,
-      year: parseInt(newVehicle.year),
-      color: newVehicle.color,
-      licensePlate: newVehicle.licensePlate,
-      vin: newVehicle.vin,
-      mileage: parseInt(newVehicle.mileage),
-    };
-    setVehicles([...vehicles, vehicle]);
-    setAddDialogOpen(false);
-    setNewVehicle({
-      make: "",
-      model: "",
-      year: "",
-      color: "",
-      licensePlate: "",
-      vin: "",
-      mileage: "",
-    });
+    const user = getStoredUser();
+    if (!user || !user.owner_id) {
+      setError("Please log in again.");
+      return;
+    }
+
+    setError(null);
+    apiCreateVehicle({
+      ownerId: user.owner_id,
+      plateNumber: newVehicle.plateNumber,
+      make: newVehicle.make || null,
+      model: newVehicle.model || null,
+      year: newVehicle.year || null,
+      color: newVehicle.color || null,
+    })
+      .then(() => apiListVehicles(user.owner_id))
+      .then((list) => {
+        setVehicles(list);
+        setAddDialogOpen(false);
+        setNewVehicle({
+          make: "",
+          model: "",
+          year: "",
+          color: "",
+          plateNumber: "",
+        });
+      })
+      .catch((err: any) => setError(err?.message ?? "Failed to add vehicle"));
   };
 
   return (
@@ -111,9 +92,12 @@ export function MyVehicles() {
       </div>
 
       {/* Vehicles Grid */}
+      {error && <p className="text-sm text-red-500">{error}</p>}
+      {loading && <p className="text-sm text-muted-foreground">Loading...</p>}
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {vehicles.map((vehicle) => (
-          <Card key={vehicle.id} className="p-6">
+          <Card key={vehicle.vehicle_id} className="p-6">
             <div className="space-y-4">
               <div className="flex items-start justify-between">
                 <div className="flex items-center gap-3">
@@ -122,50 +106,14 @@ export function MyVehicles() {
                   </div>
                   <div>
                     <h3 className="font-semibold text-lg">
-                      {vehicle.year} {vehicle.make} {vehicle.model}
+                      {vehicle.year ?? ""} {vehicle.make ?? ""} {vehicle.model ?? ""}
                     </h3>
-                    <p className="text-sm text-slate-500">{vehicle.color}</p>
-                  </div>
-                </div>
-                <Badge variant="outline">{vehicle.licensePlate}</Badge>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div>
-                  <p className="text-slate-500">VIN</p>
-                  <p className="font-medium">{vehicle.vin}</p>
-                </div>
-                <div>
-                  <p className="text-slate-500">Mileage</p>
-                  <div className="flex items-center gap-1">
-                    <Gauge className="h-4 w-4 text-slate-400" />
-                    <p className="font-medium">
-                      {vehicle.mileage.toLocaleString()} mi
+                    <p className="text-sm text-slate-500">
+                      {vehicle.color ?? "-"}
                     </p>
                   </div>
                 </div>
-                {vehicle.lastService && (
-                  <div>
-                    <p className="text-slate-500">Last Service</p>
-                    <div className="flex items-center gap-1">
-                      <Calendar className="h-4 w-4 text-slate-400" />
-                      <p className="font-medium">
-                        {vehicle.lastService.toLocaleDateString()}
-                      </p>
-                    </div>
-                  </div>
-                )}
-                {vehicle.nextService && (
-                  <div>
-                    <p className="text-slate-500">Next Service</p>
-                    <div className="flex items-center gap-1">
-                      <Calendar className="h-4 w-4 text-slate-400" />
-                      <p className="font-medium">
-                        {vehicle.nextService.toLocaleDateString()}
-                      </p>
-                    </div>
-                  </div>
-                )}
+                <Badge variant="outline">{vehicle.plate_number}</Badge>
               </div>
 
               <div className="flex gap-2 pt-2">
@@ -200,28 +148,6 @@ export function MyVehicles() {
           </DialogHeader>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-4">
             <div className="space-y-2">
-              <Label htmlFor="make">Make</Label>
-              <Input
-                id="make"
-                placeholder="e.g., Toyota"
-                value={newVehicle.make}
-                onChange={(e) =>
-                  setNewVehicle({ ...newVehicle, make: e.target.value })
-                }
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="model">Model</Label>
-              <Input
-                id="model"
-                placeholder="e.g., Camry"
-                value={newVehicle.model}
-                onChange={(e) =>
-                  setNewVehicle({ ...newVehicle, model: e.target.value })
-                }
-              />
-            </div>
-            <div className="space-y-2">
               <Label htmlFor="year">Year</Label>
               <Input
                 id="year"
@@ -245,36 +171,35 @@ export function MyVehicles() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="licensePlate">License Plate</Label>
+              <Label htmlFor="make">Make</Label>
               <Input
-                id="licensePlate"
-                placeholder="e.g., ABC-1234"
-                value={newVehicle.licensePlate}
+                id="make"
+                placeholder="e.g., Toyota"
+                value={newVehicle.make}
                 onChange={(e) =>
-                  setNewVehicle({ ...newVehicle, licensePlate: e.target.value })
+                  setNewVehicle({ ...newVehicle, make: e.target.value })
                 }
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="vin">VIN</Label>
+              <Label htmlFor="model">Model</Label>
               <Input
-                id="vin"
-                placeholder="17-character VIN"
-                value={newVehicle.vin}
+                id="model"
+                placeholder="e.g., Camry"
+                value={newVehicle.model}
                 onChange={(e) =>
-                  setNewVehicle({ ...newVehicle, vin: e.target.value })
+                  setNewVehicle({ ...newVehicle, model: e.target.value })
                 }
               />
             </div>
             <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="mileage">Current Mileage</Label>
+              <Label htmlFor="plateNumber">License Plate</Label>
               <Input
-                id="mileage"
-                type="number"
-                placeholder="e.g., 45000"
-                value={newVehicle.mileage}
+                id="plateNumber"
+                placeholder="e.g., ABC-1234"
+                value={newVehicle.plateNumber}
                 onChange={(e) =>
-                  setNewVehicle({ ...newVehicle, mileage: e.target.value })
+                  setNewVehicle({ ...newVehicle, plateNumber: e.target.value })
                 }
               />
             </div>
@@ -286,10 +211,7 @@ export function MyVehicles() {
             <Button
               onClick={handleAddVehicle}
               disabled={
-                !newVehicle.make ||
-                !newVehicle.model ||
-                !newVehicle.year ||
-                !newVehicle.licensePlate
+                !newVehicle.plateNumber
               }
             >
               Add Vehicle

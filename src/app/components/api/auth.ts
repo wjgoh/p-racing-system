@@ -1,5 +1,6 @@
 export type User = {
   user_id: number;
+  owner_id?: number | null;
   name: string;
   email: string;
   role: "ADMIN" | "MECHANIC" | "ADVISOR" | "WORKSHOP" | "OWNER" | string;

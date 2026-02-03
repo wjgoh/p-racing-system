@@ -85,6 +85,13 @@ CREATE TABLE `vehicle_owners` (
   `phone` varchar(30) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+--
+-- Dumping data for table `vehicle_owners`
+--
+
+INSERT INTO `vehicle_owners` (`owner_id`, `user_id`, `phone`) VALUES
+(1, 3, NULL);
+
 -- --------------------------------------------------------
 
 --
@@ -260,7 +267,7 @@ CREATE TABLE `service_ratings` (
 --
 
 INSERT INTO `vehicles` (`vehicle_id`, `owner_id`, `plate_number`, `make`, `model`, `year`, `color`) VALUES
-(2, 3, 'WEWEW', 'wewew', 'wewe', '2000', 'ew');
+(2, 1, 'WEWEW', 'wewew', 'wewe', '2000', 'ew');
 
 --
 -- Indexes for dumped tables
@@ -500,13 +507,13 @@ ALTER TABLE `admins`
 -- Constraints for table `vehicles`
 --
 ALTER TABLE `vehicles`
-  ADD CONSTRAINT `vehicles_ibfk_1` FOREIGN KEY (`owner_id`) REFERENCES `users` (`user_id`);
+  ADD CONSTRAINT `vehicles_ibfk_1` FOREIGN KEY (`owner_id`) REFERENCES `vehicle_owners` (`owner_id`);
 
 --
 -- Constraints for table `service_bookings`
 --
 ALTER TABLE `service_bookings`
-  ADD CONSTRAINT `service_bookings_ibfk_1` FOREIGN KEY (`owner_id`) REFERENCES `users` (`user_id`),
+  ADD CONSTRAINT `service_bookings_ibfk_1` FOREIGN KEY (`owner_id`) REFERENCES `vehicle_owners` (`owner_id`),
   ADD CONSTRAINT `service_bookings_ibfk_2` FOREIGN KEY (`workshop_id`) REFERENCES `workshops` (`workshop_id`),
   ADD CONSTRAINT `service_bookings_ibfk_3` FOREIGN KEY (`vehicle_id`) REFERENCES `vehicles` (`vehicle_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
@@ -515,7 +522,7 @@ ALTER TABLE `service_bookings`
 --
 ALTER TABLE `jobs`
   ADD CONSTRAINT `jobs_ibfk_1` FOREIGN KEY (`booking_id`) REFERENCES `service_bookings` (`booking_id`) ON DELETE SET NULL ON UPDATE CASCADE,
-  ADD CONSTRAINT `jobs_ibfk_2` FOREIGN KEY (`owner_id`) REFERENCES `users` (`user_id`),
+  ADD CONSTRAINT `jobs_ibfk_2` FOREIGN KEY (`owner_id`) REFERENCES `vehicle_owners` (`owner_id`),
   ADD CONSTRAINT `jobs_ibfk_3` FOREIGN KEY (`vehicle_id`) REFERENCES `vehicles` (`vehicle_id`) ON DELETE SET NULL ON UPDATE CASCADE,
   ADD CONSTRAINT `jobs_ibfk_4` FOREIGN KEY (`workshop_id`) REFERENCES `workshops` (`workshop_id`),
   ADD CONSTRAINT `jobs_ibfk_5` FOREIGN KEY (`assigned_mechanic_id`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
@@ -545,7 +552,7 @@ ALTER TABLE `maintenance_records`
 ALTER TABLE `invoices`
   ADD CONSTRAINT `invoices_ibfk_1` FOREIGN KEY (`job_id`) REFERENCES `jobs` (`job_id`) ON DELETE SET NULL ON UPDATE CASCADE,
   ADD CONSTRAINT `invoices_ibfk_2` FOREIGN KEY (`record_id`) REFERENCES `maintenance_records` (`record_id`) ON DELETE SET NULL ON UPDATE CASCADE,
-  ADD CONSTRAINT `invoices_ibfk_3` FOREIGN KEY (`owner_id`) REFERENCES `users` (`user_id`),
+  ADD CONSTRAINT `invoices_ibfk_3` FOREIGN KEY (`owner_id`) REFERENCES `vehicle_owners` (`owner_id`),
   ADD CONSTRAINT `invoices_ibfk_4` FOREIGN KEY (`workshop_id`) REFERENCES `workshops` (`workshop_id`);
 
 --
@@ -559,7 +566,7 @@ ALTER TABLE `invoice_items`
 --
 ALTER TABLE `service_ratings`
   ADD CONSTRAINT `service_ratings_ibfk_1` FOREIGN KEY (`booking_id`) REFERENCES `service_bookings` (`booking_id`),
-  ADD CONSTRAINT `service_ratings_ibfk_2` FOREIGN KEY (`owner_id`) REFERENCES `users` (`user_id`),
+  ADD CONSTRAINT `service_ratings_ibfk_2` FOREIGN KEY (`owner_id`) REFERENCES `vehicle_owners` (`owner_id`),
   ADD CONSTRAINT `service_ratings_ibfk_3` FOREIGN KEY (`workshop_id`) REFERENCES `workshops` (`workshop_id`),
   ADD CONSTRAINT `service_ratings_ibfk_4` FOREIGN KEY (`mechanic_id`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 COMMIT;

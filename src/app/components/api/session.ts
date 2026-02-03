@@ -1,5 +1,6 @@
 export type SessionUser = {
   user_id: number;
+  owner_id?: number | null;
   name: string;
   email: string;
   role: string;

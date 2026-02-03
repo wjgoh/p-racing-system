@@ -12,9 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../ui/select";
-import { Calendar } from "../ui/calendar";
-import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
-import { Calendar as CalendarIcon, Clock, CheckCircle, AlertCircle } from "lucide-react";
+import { Clock, CheckCircle, AlertCircle } from "lucide-react";
 import { format } from "date-fns";
 import {
   apiCreateBooking,
@@ -60,9 +58,6 @@ const timeSlots = [
 ];
 
 export function ServiceRequest() {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
   const [requests, setRequests] = useState<Booking[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [workshops, setWorkshops] = useState<Workshop[]>([]);
@@ -72,7 +67,7 @@ export function ServiceRequest() {
   const [selectedVehicle, setSelectedVehicle] = useState("");
   const [selectedWorkshop, setSelectedWorkshop] = useState("");
   const [serviceType, setServiceType] = useState("");
-  const [preferredDate, setPreferredDate] = useState<Date>();
+  const [preferredDate, setPreferredDate] = useState("");
   const [preferredTime, setPreferredTime] = useState("");
   const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -83,14 +78,18 @@ export function ServiceRequest() {
       setError("Please log in again.");
       return;
     }
+    if (!user.owner_id) {
+      setError("Owner profile not found. Please log in again.");
+      return;
+    }
 
     setLoading(true);
     setError(null);
 
     Promise.all([
-      apiListVehicles(user.user_id),
+      apiListVehicles(user.owner_id),
       apiListWorkshops(),
-      apiListBookings({ ownerId: user.user_id }),
+      apiListBookings({ ownerId: user.owner_id }),
     ])
       .then(([vehicleList, workshopList, bookingList]) => {
         setVehicles(vehicleList);
@@ -140,12 +139,16 @@ export function ServiceRequest() {
       setError("Please log in again.");
       return;
     }
+    if (!user.owner_id) {
+      setError("Owner profile not found. Please log in again.");
+      return;
+    }
 
     setSubmitting(true);
     setError(null);
 
     apiCreateBooking({
-      ownerId: user.user_id,
+      ownerId: user.owner_id,
       workshopId: Number(selectedWorkshop),
       vehicleId: Number(selectedVehicle),
       customerName: user.name,
@@ -155,7 +158,7 @@ export function ServiceRequest() {
       preferredTime,
       description: description || null,
     })
-      .then(() => apiListBookings({ ownerId: user.user_id }))
+      .then(() => apiListBookings({ ownerId: user.owner_id }))
       .then((bookingList) => {
         setRequests(bookingList);
         setShowForm(false);
@@ -293,32 +296,14 @@ export function ServiceRequest() {
             </div>
 
             <div className="space-y-2">
-              <Label>Preferred Date</Label>
-              <Popover>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="outline"
-                  type="button"
-                  className="w-full justify-start text-left font-normal"
-                >
-                  <CalendarIcon className="mr-2 h-4 w-4" />
-                  {preferredDate ? (
-                    format(preferredDate, "PPP")
-                    ) : (
-                      <span>Pick a date</span>
-                    )}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-auto p-0">
-                  <Calendar
-                    mode="single"
-                    selected={preferredDate}
-                    onSelect={setPreferredDate}
-                    disabled={(date) => date < today}
-                    initialFocus
-                  />
-                </PopoverContent>
-              </Popover>
+              <Label htmlFor="preferredDate">Preferred Date</Label>
+              <Input
+                id="preferredDate"
+                type="date"
+                value={preferredDate}
+                min={format(new Date(), "yyyy-MM-dd")}
+                onChange={(e) => setPreferredDate(e.target.value)}
+              />
             </div>
 
             <div className="space-y-2">
