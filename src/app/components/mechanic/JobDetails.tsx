@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -31,6 +31,13 @@ import {
   Save,
 } from "lucide-react";
 import type { Job } from "../MechanicDashboard";
+import {
+  apiAddJobPart,
+  apiAddJobRepair,
+  apiRemoveJobPart,
+  apiUpdateJobNotes,
+  apiUpdateMechanicJobStatus,
+} from "../api/mechanic";
 
 interface JobDetailsProps {
   job: Job;
@@ -42,6 +49,12 @@ export function JobDetails({ job, onUpdateJob, onBack }: JobDetailsProps) {
   const [currentJob, setCurrentJob] = useState<Job>(job);
   const [isAddPartDialogOpen, setIsAddPartDialogOpen] = useState(false);
   const [isAddRepairDialogOpen, setIsAddRepairDialogOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [statusSaving, setStatusSaving] = useState(false);
+  const [notesSaving, setNotesSaving] = useState(false);
+  const [partSaving, setPartSaving] = useState(false);
+  const [repairSaving, setRepairSaving] = useState(false);
+  const [removingPartId, setRemovingPartId] = useState<string | null>(null);
   const [newPart, setNewPart] = useState({
     name: "",
     quantity: 1,
@@ -49,17 +62,47 @@ export function JobDetails({ job, onUpdateJob, onBack }: JobDetailsProps) {
   });
   const [newRepair, setNewRepair] = useState("");
 
-  const handleStatusChange = (status: Job["status"]) => {
+  useEffect(() => {
+    setCurrentJob(job);
+  }, [job]);
+
+  const handleStatusChange = async (status: Job["status"]) => {
+    if (statusSaving) return;
+    setError(null);
+    setStatusSaving(true);
+    const previousStatus = currentJob.status;
     const updatedJob = { ...currentJob, status };
     setCurrentJob(updatedJob);
-    onUpdateJob(updatedJob);
+    try {
+      await apiUpdateMechanicJobStatus({
+        jobId: currentJob.jobId,
+        status,
+      });
+      onUpdateJob(updatedJob);
+    } catch (err: any) {
+      setCurrentJob({ ...currentJob, status: previousStatus });
+      setError(err?.message ?? "Failed to update job status");
+    } finally {
+      setStatusSaving(false);
+    }
   };
 
-  const handleAddPart = () => {
-    if (newPart.name.trim()) {
+  const handleAddPart = async () => {
+    if (!newPart.name.trim() || partSaving) return;
+    setError(null);
+    setPartSaving(true);
+    try {
+      const created = await apiAddJobPart({
+        jobId: currentJob.jobId,
+        name: newPart.name.trim(),
+        quantity: newPart.quantity,
+        cost: newPart.cost,
+      });
       const part = {
-        id: Date.now().toString(),
-        ...newPart,
+        id: String(created.part_id),
+        name: created.name,
+        quantity: created.quantity,
+        cost: Number(created.unit_cost ?? 0),
       };
       const updatedJob = {
         ...currentJob,
@@ -69,30 +112,47 @@ export function JobDetails({ job, onUpdateJob, onBack }: JobDetailsProps) {
       onUpdateJob(updatedJob);
       setNewPart({ name: "", quantity: 1, cost: 0 });
       setIsAddPartDialogOpen(false);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to add part");
+    } finally {
+      setPartSaving(false);
     }
   };
 
-  const handleRemovePart = (partId: string) => {
-    const updatedJob = {
-      ...currentJob,
-      parts: currentJob.parts.filter((p) => p.id !== partId),
-    };
-    setCurrentJob(updatedJob);
-    onUpdateJob(updatedJob);
+  const handleRemovePart = async (partId: string) => {
+    if (removingPartId) return;
+    setError(null);
+    setRemovingPartId(partId);
+    try {
+      await apiRemoveJobPart(Number(partId));
+      const updatedJob = {
+        ...currentJob,
+        parts: currentJob.parts.filter((p) => p.id !== partId),
+      };
+      setCurrentJob(updatedJob);
+      onUpdateJob(updatedJob);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to remove part");
+    } finally {
+      setRemovingPartId(null);
+    }
   };
 
-  const handleAddRepair = () => {
-    if (newRepair.trim()) {
+  const handleAddRepair = async () => {
+    if (!newRepair.trim() || repairSaving) return;
+    setError(null);
+    setRepairSaving(true);
+    try {
+      const created = await apiAddJobRepair({
+        jobId: currentJob.jobId,
+        description: newRepair.trim(),
+      });
       const repair = {
-        id: Date.now().toString(),
-        description: newRepair,
-        timestamp: new Date().toLocaleString("en-US", {
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
+        id: String(created.repair_id),
+        description: created.description,
+        timestamp: created.logged_at
+          ? new Date(created.logged_at).toLocaleString()
+          : new Date().toLocaleString(),
       };
       const updatedJob = {
         ...currentJob,
@@ -102,6 +162,10 @@ export function JobDetails({ job, onUpdateJob, onBack }: JobDetailsProps) {
       onUpdateJob(updatedJob);
       setNewRepair("");
       setIsAddRepairDialogOpen(false);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to add repair log");
+    } finally {
+      setRepairSaving(false);
     }
   };
 
@@ -110,8 +174,21 @@ export function JobDetails({ job, onUpdateJob, onBack }: JobDetailsProps) {
     setCurrentJob(updatedJob);
   };
 
-  const handleSaveNotes = () => {
-    onUpdateJob(currentJob);
+  const handleSaveNotes = async () => {
+    if (notesSaving) return;
+    setError(null);
+    setNotesSaving(true);
+    try {
+      await apiUpdateJobNotes({
+        jobId: currentJob.jobId,
+        notes: currentJob.notes,
+      });
+      onUpdateJob(currentJob);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to save notes");
+    } finally {
+      setNotesSaving(false);
+    }
   };
 
   const totalPartsCost = currentJob.parts.reduce(
@@ -151,6 +228,8 @@ export function JobDetails({ job, onUpdateJob, onBack }: JobDetailsProps) {
         Back to Jobs
       </Button>
 
+      {error && <p className="text-sm text-red-500">{error}</p>}
+
       {/* Job Header */}
       <Card className="p-4 md:p-6">
         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-4">
@@ -174,6 +253,7 @@ export function JobDetails({ job, onUpdateJob, onBack }: JobDetailsProps) {
               onValueChange={(value) =>
                 handleStatusChange(value as Job["status"])
               }
+              disabled={statusSaving}
             >
               <SelectTrigger id="job-status">
                 <SelectValue />
@@ -266,7 +346,7 @@ export function JobDetails({ job, onUpdateJob, onBack }: JobDetailsProps) {
                   <div className="flex-1">
                     <p className="font-medium">{part.name}</p>
                     <p className="text-sm text-muted-foreground">
-                      Quantity: {part.quantity} × ${part.cost.toFixed(2)} = $
+                      Quantity: {part.quantity} x ${part.cost.toFixed(2)} = $
                       {(part.quantity * part.cost).toFixed(2)}
                     </p>
                   </div>
@@ -275,6 +355,7 @@ export function JobDetails({ job, onUpdateJob, onBack }: JobDetailsProps) {
                     size="sm"
                     onClick={() => handleRemovePart(part.id)}
                     className="text-destructive"
+                    disabled={removingPartId === part.id}
                   >
                     <Trash2 className="h-4 w-4" />
                   </Button>
@@ -335,9 +416,9 @@ export function JobDetails({ job, onUpdateJob, onBack }: JobDetailsProps) {
           rows={4}
           className="mb-4"
         />
-        <Button onClick={handleSaveNotes} className="gap-2">
+        <Button onClick={handleSaveNotes} className="gap-2" disabled={notesSaving}>
           <Save className="h-4 w-4" />
-          Save Notes
+          {notesSaving ? "Saving..." : "Save Notes"}
         </Button>
       </Card>
 
@@ -398,7 +479,9 @@ export function JobDetails({ job, onUpdateJob, onBack }: JobDetailsProps) {
             >
               Cancel
             </Button>
-            <Button onClick={handleAddPart}>Add Part</Button>
+            <Button onClick={handleAddPart} disabled={partSaving}>
+              {partSaving ? "Adding..." : "Add Part"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -436,7 +519,9 @@ export function JobDetails({ job, onUpdateJob, onBack }: JobDetailsProps) {
             >
               Cancel
             </Button>
-            <Button onClick={handleAddRepair}>Log Repair</Button>
+            <Button onClick={handleAddRepair} disabled={repairSaving}>
+              {repairSaving ? "Logging..." : "Log Repair"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
