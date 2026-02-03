@@ -1,11 +1,18 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Card } from "./ui/card";
 import { Checkbox } from "./ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "./ui/select";
 import { Eye, EyeOff, Lock, Mail, User, Car, Trash2, Plus } from "lucide-react";
-import { apiRegister } from "./api/auth"; // <-- adjust path if needed
+import { apiListWorkshops, apiRegister, type Workshop } from "./api/auth"; // <-- adjust path if needed
 
 interface RegisterFormProps {
   onSwitchToLogin: () => void;
@@ -28,6 +35,17 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [agreeToTerms, setAgreeToTerms] = useState(false);
+  const [role, setRole] = useState<"" | "OWNER" | "MECHANIC" | "WORKSHOP">("");
+  const [workshops, setWorkshops] = useState<Workshop[]>([]);
+  const [workshopsLoading, setWorkshopsLoading] = useState(false);
+  const [workshopsError, setWorkshopsError] = useState<string | null>(null);
+  const [workshopId, setWorkshopId] = useState("");
+  const [workshopName, setWorkshopName] = useState("");
+  const [workshopEmail, setWorkshopEmail] = useState("");
+  const [workshopPhone, setWorkshopPhone] = useState("");
+  const [workshopAddress, setWorkshopAddress] = useState("");
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   
   // Car details - now an array
   const [vehicles, setVehicles] = useState<Vehicle[]>([
@@ -58,31 +76,79 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
     ));
   };
 
+  useEffect(() => {
+    if (role !== "MECHANIC") return;
+    let ignore = false;
+
+    setWorkshopsLoading(true);
+    setWorkshopsError(null);
+    apiListWorkshops()
+      .then((list) => {
+        if (!ignore) setWorkshops(list);
+      })
+      .catch((err: any) => {
+        if (!ignore) setWorkshopsError(err?.message ?? "Failed to load workshops");
+      })
+      .finally(() => {
+        if (!ignore) setWorkshopsLoading(false);
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [role]);
+
   const handleSubmit = async (e: React.FormEvent) => {
   e.preventDefault();
+  setSubmitError(null);
+
+  if (!role) {
+    setSubmitError("Please choose a role.");
+    return;
+  }
+
+  if (role === "WORKSHOP" && !workshopName.trim()) {
+    setSubmitError("Workshop name is required.");
+    return;
+  }
 
   if (password !== confirmPassword) {
-    console.error("Passwords don't match");
+    setSubmitError("Passwords don't match.");
     return;
   }
 
   if (!agreeToTerms) {
-    console.error("Must agree to terms");
+    setSubmitError("You must agree to the terms.");
     return;
   }
 
   try {
+    setSubmitting(true);
     await apiRegister({
       name,
       email,
       password,
-      vehicles,
+      role,
+      vehicles: role === "OWNER" ? vehicles : [],
+      workshopId:
+        role === "MECHANIC" && workshopId ? Number(workshopId) : null,
+      workshop:
+        role === "WORKSHOP"
+          ? {
+              name: workshopName.trim(),
+              email: workshopEmail.trim() || undefined,
+              phone: workshopPhone.trim() || undefined,
+              address: workshopAddress.trim() || undefined,
+            }
+          : undefined,
     });
 
     // After successful register, go to login page
     onSwitchToLogin();
   } catch (err: any) {
-    console.error(err?.message ?? "Register failed");
+    setSubmitError(err?.message ?? "Register failed");
+  } finally {
+    setSubmitting(false);
   }
 };
 
@@ -115,6 +181,23 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
                   required
                 />
               </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="role">Role</Label>
+              <Select value={role} onValueChange={(value) => setRole(value as typeof role)}>
+                <SelectTrigger id="role" className="w-full">
+                  <SelectValue placeholder="Select a role" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="OWNER">Vehicle Owner</SelectItem>
+                  <SelectItem value="MECHANIC">Mechanic</SelectItem>
+                  <SelectItem value="WORKSHOP">Workshop</SelectItem>
+                </SelectContent>
+              </Select>
+              {!role && (
+                <p className="text-xs text-red-500">Please choose a role.</p>
+              )}
             </div>
 
             <div className="space-y-2">
@@ -192,113 +275,211 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
             </div>
           </div>
 
-          {/* Right Side - Vehicle Information */}
-          <div className="space-y-4 lg:border-l lg:pl-8">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-medium">Vehicle Information</h2>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={addVehicle}
-                className="gap-2"
-              >
-                <Plus className="h-4 w-4" />
-                Add Vehicle
-              </Button>
-            </div>
+          {/* Right Side - Vehicle Information (Owners only) */}
+          {role === "OWNER" && (
+            <div className="space-y-4 lg:border-l lg:pl-8">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-medium">Vehicle Information</h2>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={addVehicle}
+                  className="gap-2"
+                >
+                  <Plus className="h-4 w-4" />
+                  Add Vehicle
+                </Button>
+              </div>
 
-            <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
-              {vehicles.map((vehicle, index) => (
-                <div key={vehicle.id} className="p-4 border rounded-lg space-y-4 relative">
-                  <div className="flex items-center justify-between mb-2">
-                    <h3 className="font-medium text-sm">Vehicle {index + 1}</h3>
-                    {vehicles.length > 1 && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => removeVehicle(vehicle.id)}
-                        className="h-8 w-8 p-0 text-destructive hover:text-destructive"
+              <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+                {vehicles.map((vehicle, index) => (
+                  <div key={vehicle.id} className="p-4 border rounded-lg space-y-4 relative">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="font-medium text-sm">Vehicle {index + 1}</h3>
+                      {vehicles.length > 1 && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => removeVehicle(vehicle.id)}
+                          className="h-8 w-8 p-0 text-destructive hover:text-destructive"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor={`plate-number-${vehicle.id}`}>License Plate Number</Label>
+                      <div className="relative">
+                        <Car className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                        <Input
+                          id={`plate-number-${vehicle.id}`}
+                          type="text"
+                          placeholder="ABC-1234"
+                          value={vehicle.plateNumber}
+                          onChange={(e) => updateVehicle(vehicle.id, "plateNumber", e.target.value.toUpperCase())}
+                          className="pl-10"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label htmlFor={`car-make-${vehicle.id}`}>Make</Label>
+                        <Input
+                          id={`car-make-${vehicle.id}`}
+                          type="text"
+                          placeholder="Toyota"
+                          value={vehicle.make}
+                          onChange={(e) => updateVehicle(vehicle.id, "make", e.target.value)}
+                          required
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor={`car-model-${vehicle.id}`}>Model</Label>
+                        <Input
+                          id={`car-model-${vehicle.id}`}
+                          type="text"
+                          placeholder="Camry"
+                          value={vehicle.model}
+                          onChange={(e) => updateVehicle(vehicle.id, "model", e.target.value)}
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label htmlFor={`car-year-${vehicle.id}`}>Year</Label>
+                        <Input
+                          id={`car-year-${vehicle.id}`}
+                          type="number"
+                          placeholder="2024"
+                          value={vehicle.year}
+                          onChange={(e) => updateVehicle(vehicle.id, "year", e.target.value)}
+                          min="1900"
+                          max="2026"
+                          required
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor={`car-color-${vehicle.id}`}>Color</Label>
+                        <Input
+                          id={`car-color-${vehicle.id}`}
+                          type="text"
+                          placeholder="Silver"
+                          value={vehicle.color}
+                          onChange={(e) => updateVehicle(vehicle.id, "color", e.target.value)}
+                          required
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {role === "WORKSHOP" && (
+            <div className="space-y-4 lg:border-l lg:pl-8">
+              <h2 className="text-lg font-medium">Workshop Information</h2>
+
+              <div className="space-y-2">
+                <Label htmlFor="workshop-name">Workshop Name</Label>
+                <Input
+                  id="workshop-name"
+                  type="text"
+                  placeholder="FastFix Auto"
+                  value={workshopName}
+                  onChange={(e) => setWorkshopName(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="workshop-email">Workshop Email (optional)</Label>
+                <Input
+                  id="workshop-email"
+                  type="email"
+                  placeholder="workshop@example.com"
+                  value={workshopEmail}
+                  onChange={(e) => setWorkshopEmail(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="workshop-phone">Phone (optional)</Label>
+                <Input
+                  id="workshop-phone"
+                  type="text"
+                  placeholder="(123) 456-7890"
+                  value={workshopPhone}
+                  onChange={(e) => setWorkshopPhone(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="workshop-address">Address (optional)</Label>
+                <Input
+                  id="workshop-address"
+                  type="text"
+                  placeholder="123 Main St, City"
+                  value={workshopAddress}
+                  onChange={(e) => setWorkshopAddress(e.target.value)}
+                />
+              </div>
+            </div>
+          )}
+
+          {role === "MECHANIC" && (
+            <div className="space-y-4 lg:border-l lg:pl-8">
+              <h2 className="text-lg font-medium">Workshop Assignment</h2>
+
+              {workshopsLoading && (
+                <p className="text-sm text-muted-foreground">Loading workshops...</p>
+              )}
+              {workshopsError && (
+                <p className="text-sm text-red-500">{workshopsError}</p>
+              )}
+
+              <div className="space-y-2">
+                <Label htmlFor="workshop">Workshop</Label>
+                <Select
+                  value={workshopId}
+                  onValueChange={setWorkshopId}
+                  disabled={workshops.length === 0}
+                >
+                  <SelectTrigger id="workshop" className="w-full">
+                    <SelectValue
+                      placeholder={
+                        workshops.length > 0
+                          ? "Select a workshop"
+                          : "No workshops available"
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {workshops.map((workshop) => (
+                      <SelectItem
+                        key={workshop.workshop_id}
+                        value={String(workshop.workshop_id)}
                       >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    )}
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor={`plate-number-${vehicle.id}`}>License Plate Number</Label>
-                    <div className="relative">
-                      <Car className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                      <Input
-                        id={`plate-number-${vehicle.id}`}
-                        type="text"
-                        placeholder="ABC-1234"
-                        value={vehicle.plateNumber}
-                        onChange={(e) => updateVehicle(vehicle.id, "plateNumber", e.target.value.toUpperCase())}
-                        className="pl-10"
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor={`car-make-${vehicle.id}`}>Make</Label>
-                      <Input
-                        id={`car-make-${vehicle.id}`}
-                        type="text"
-                        placeholder="Toyota"
-                        value={vehicle.make}
-                        onChange={(e) => updateVehicle(vehicle.id, "make", e.target.value)}
-                        required
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor={`car-model-${vehicle.id}`}>Model</Label>
-                      <Input
-                        id={`car-model-${vehicle.id}`}
-                        type="text"
-                        placeholder="Camry"
-                        value={vehicle.model}
-                        onChange={(e) => updateVehicle(vehicle.id, "model", e.target.value)}
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor={`car-year-${vehicle.id}`}>Year</Label>
-                      <Input
-                        id={`car-year-${vehicle.id}`}
-                        type="number"
-                        placeholder="2024"
-                        value={vehicle.year}
-                        onChange={(e) => updateVehicle(vehicle.id, "year", e.target.value)}
-                        min="1900"
-                        max="2026"
-                        required
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor={`car-color-${vehicle.id}`}>Color</Label>
-                      <Input
-                        id={`car-color-${vehicle.id}`}
-                        type="text"
-                        placeholder="Silver"
-                        value={vehicle.color}
-                        onChange={(e) => updateVehicle(vehicle.id, "color", e.target.value)}
-                        required
-                      />
-                    </div>
-                  </div>
-                </div>
-              ))}
+                        {workshop.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Optional: you can assign a workshop later.
+                </p>
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         <div className="flex items-start space-x-2 pt-4 border-t">
@@ -337,8 +518,10 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
           </Label>
         </div>
 
-        <Button type="submit" className="w-full">
-          Create account
+        {submitError && <p className="text-sm text-red-500">{submitError}</p>}
+
+        <Button type="submit" className="w-full" disabled={!role || submitting}>
+          {submitting ? "Creating account..." : "Create account"}
         </Button>
       </form>
 

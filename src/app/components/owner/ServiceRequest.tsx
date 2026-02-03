@@ -154,7 +154,7 @@ export function ServiceRequest() {
       customerName: user.name,
       customerEmail: user.email,
       serviceType,
-      preferredDate,
+      preferredDate: format(preferredDate, "yyyy-MM-dd"),
       preferredTime,
       description: description || null,
     })
