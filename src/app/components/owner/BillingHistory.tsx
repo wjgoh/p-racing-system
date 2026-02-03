@@ -92,10 +92,14 @@ export function BillingHistory() {
       setError("No active session. Please sign in again.");
       return;
     }
+    if (!user.owner_id) {
+      setError("Owner profile not found. Please sign in again.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
-      const data = await apiListInvoices({ ownerId: user.user_id });
+      const data = await apiListInvoices({ ownerId: user.owner_id });
       const mapped = data.map((inv) => {
         const items = (inv.items ?? []).map((item) => {
           const qty = Number(item.quantity ?? 0);
