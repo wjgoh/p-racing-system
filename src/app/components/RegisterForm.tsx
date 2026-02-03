@@ -5,6 +5,7 @@ import { Label } from "./ui/label";
 import { Card } from "./ui/card";
 import { Checkbox } from "./ui/checkbox";
 import { Eye, EyeOff, Lock, Mail, User, Car, Trash2, Plus } from "lucide-react";
+import { apiRegister } from "./api/auth"; // <-- adjust path if needed
 
 interface RegisterFormProps {
   onSwitchToLogin: () => void;
@@ -57,27 +58,33 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
     ));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (password !== confirmPassword) {
-      console.error("Passwords don't match");
-      return;
-    }
-    
-    if (!agreeToTerms) {
-      console.error("Must agree to terms");
-      return;
-    }
-    
-    // Handle registration logic here
-    console.log("Registration submitted:", { 
-      name, 
-      email, 
+  const handleSubmit = async (e: React.FormEvent) => {
+  e.preventDefault();
+
+  if (password !== confirmPassword) {
+    console.error("Passwords don't match");
+    return;
+  }
+
+  if (!agreeToTerms) {
+    console.error("Must agree to terms");
+    return;
+  }
+
+  try {
+    await apiRegister({
+      name,
+      email,
       password,
-      vehicles: vehicles
+      vehicles,
     });
-  };
+
+    // After successful register, go to login page
+    onSwitchToLogin();
+  } catch (err: any) {
+    console.error(err?.message ?? "Register failed");
+  }
+};
 
   return (
     <Card className="w-full max-w-5xl p-8 space-y-6">
