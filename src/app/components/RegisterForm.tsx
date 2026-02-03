@@ -4,6 +4,13 @@ import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Card } from "./ui/card";
 import { Checkbox } from "./ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "./ui/select";
 import { Eye, EyeOff, Lock, Mail, User, Car, Trash2, Plus } from "lucide-react";
 import { apiRegister } from "./api/auth"; // <-- adjust path if needed
 
@@ -28,6 +35,7 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [agreeToTerms, setAgreeToTerms] = useState(false);
+  const [role, setRole] = useState<"" | "OWNER" | "MECHANIC" | "WORKSHOP">("");
   
   // Car details - now an array
   const [vehicles, setVehicles] = useState<Vehicle[]>([
@@ -61,6 +69,11 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
   const handleSubmit = async (e: React.FormEvent) => {
   e.preventDefault();
 
+  if (!role) {
+    console.error("Role is required");
+    return;
+  }
+
   if (password !== confirmPassword) {
     console.error("Passwords don't match");
     return;
@@ -76,7 +89,8 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
       name,
       email,
       password,
-      vehicles,
+      role,
+      vehicles: role === "OWNER" ? vehicles : [],
     });
 
     // After successful register, go to login page
@@ -115,6 +129,23 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
                   required
                 />
               </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="role">Role</Label>
+              <Select value={role} onValueChange={(value) => setRole(value as typeof role)}>
+                <SelectTrigger id="role" className="w-full">
+                  <SelectValue placeholder="Select a role" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="OWNER">Vehicle Owner</SelectItem>
+                  <SelectItem value="MECHANIC">Mechanic</SelectItem>
+                  <SelectItem value="WORKSHOP">Workshop</SelectItem>
+                </SelectContent>
+              </Select>
+              {!role && (
+                <p className="text-xs text-red-500">Please choose a role.</p>
+              )}
             </div>
 
             <div className="space-y-2">
@@ -192,113 +223,115 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
             </div>
           </div>
 
-          {/* Right Side - Vehicle Information */}
-          <div className="space-y-4 lg:border-l lg:pl-8">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-medium">Vehicle Information</h2>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={addVehicle}
-                className="gap-2"
-              >
-                <Plus className="h-4 w-4" />
-                Add Vehicle
-              </Button>
+          {/* Right Side - Vehicle Information (Owners only) */}
+          {role === "OWNER" && (
+            <div className="space-y-4 lg:border-l lg:pl-8">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-medium">Vehicle Information</h2>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={addVehicle}
+                  className="gap-2"
+                >
+                  <Plus className="h-4 w-4" />
+                  Add Vehicle
+                </Button>
+              </div>
+
+              <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+                {vehicles.map((vehicle, index) => (
+                  <div key={vehicle.id} className="p-4 border rounded-lg space-y-4 relative">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="font-medium text-sm">Vehicle {index + 1}</h3>
+                      {vehicles.length > 1 && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => removeVehicle(vehicle.id)}
+                          className="h-8 w-8 p-0 text-destructive hover:text-destructive"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor={`plate-number-${vehicle.id}`}>License Plate Number</Label>
+                      <div className="relative">
+                        <Car className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                        <Input
+                          id={`plate-number-${vehicle.id}`}
+                          type="text"
+                          placeholder="ABC-1234"
+                          value={vehicle.plateNumber}
+                          onChange={(e) => updateVehicle(vehicle.id, "plateNumber", e.target.value.toUpperCase())}
+                          className="pl-10"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label htmlFor={`car-make-${vehicle.id}`}>Make</Label>
+                        <Input
+                          id={`car-make-${vehicle.id}`}
+                          type="text"
+                          placeholder="Toyota"
+                          value={vehicle.make}
+                          onChange={(e) => updateVehicle(vehicle.id, "make", e.target.value)}
+                          required
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor={`car-model-${vehicle.id}`}>Model</Label>
+                        <Input
+                          id={`car-model-${vehicle.id}`}
+                          type="text"
+                          placeholder="Camry"
+                          value={vehicle.model}
+                          onChange={(e) => updateVehicle(vehicle.id, "model", e.target.value)}
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label htmlFor={`car-year-${vehicle.id}`}>Year</Label>
+                        <Input
+                          id={`car-year-${vehicle.id}`}
+                          type="number"
+                          placeholder="2024"
+                          value={vehicle.year}
+                          onChange={(e) => updateVehicle(vehicle.id, "year", e.target.value)}
+                          min="1900"
+                          max="2026"
+                          required
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor={`car-color-${vehicle.id}`}>Color</Label>
+                        <Input
+                          id={`car-color-${vehicle.id}`}
+                          type="text"
+                          placeholder="Silver"
+                          value={vehicle.color}
+                          onChange={(e) => updateVehicle(vehicle.id, "color", e.target.value)}
+                          required
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
-
-            <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
-              {vehicles.map((vehicle, index) => (
-                <div key={vehicle.id} className="p-4 border rounded-lg space-y-4 relative">
-                  <div className="flex items-center justify-between mb-2">
-                    <h3 className="font-medium text-sm">Vehicle {index + 1}</h3>
-                    {vehicles.length > 1 && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => removeVehicle(vehicle.id)}
-                        className="h-8 w-8 p-0 text-destructive hover:text-destructive"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    )}
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor={`plate-number-${vehicle.id}`}>License Plate Number</Label>
-                    <div className="relative">
-                      <Car className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                      <Input
-                        id={`plate-number-${vehicle.id}`}
-                        type="text"
-                        placeholder="ABC-1234"
-                        value={vehicle.plateNumber}
-                        onChange={(e) => updateVehicle(vehicle.id, "plateNumber", e.target.value.toUpperCase())}
-                        className="pl-10"
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor={`car-make-${vehicle.id}`}>Make</Label>
-                      <Input
-                        id={`car-make-${vehicle.id}`}
-                        type="text"
-                        placeholder="Toyota"
-                        value={vehicle.make}
-                        onChange={(e) => updateVehicle(vehicle.id, "make", e.target.value)}
-                        required
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor={`car-model-${vehicle.id}`}>Model</Label>
-                      <Input
-                        id={`car-model-${vehicle.id}`}
-                        type="text"
-                        placeholder="Camry"
-                        value={vehicle.model}
-                        onChange={(e) => updateVehicle(vehicle.id, "model", e.target.value)}
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor={`car-year-${vehicle.id}`}>Year</Label>
-                      <Input
-                        id={`car-year-${vehicle.id}`}
-                        type="number"
-                        placeholder="2024"
-                        value={vehicle.year}
-                        onChange={(e) => updateVehicle(vehicle.id, "year", e.target.value)}
-                        min="1900"
-                        max="2026"
-                        required
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor={`car-color-${vehicle.id}`}>Color</Label>
-                      <Input
-                        id={`car-color-${vehicle.id}`}
-                        type="text"
-                        placeholder="Silver"
-                        value={vehicle.color}
-                        onChange={(e) => updateVehicle(vehicle.id, "color", e.target.value)}
-                        required
-                      />
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          )}
         </div>
 
         <div className="flex items-start space-x-2 pt-4 border-t">
@@ -337,7 +370,7 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
           </Label>
         </div>
 
-        <Button type="submit" className="w-full">
+        <Button type="submit" className="w-full" disabled={!role}>
           Create account
         </Button>
       </form>

@@ -2,13 +2,14 @@ export type User = {
   user_id: number;
   name: string;
   email: string;
-  role: "ADMIN" | "MECHANIC" | "ADVISOR" | "OWNER" | string;
+  role: "ADMIN" | "MECHANIC" | "ADVISOR" | "WORKSHOP" | "OWNER" | string;
 };
 export async function apiRegister(payload: {
   name: string;
   email: string;
   password: string;
-  vehicles: Array<{
+  role: "ADMIN" | "MECHANIC" | "ADVISOR" | "WORKSHOP" | "OWNER" | string;
+  vehicles?: Array<{
     plateNumber: string;
     make: string;
     model: string;
@@ -23,8 +24,8 @@ export async function apiRegister(payload: {
       name: payload.name,
       email: payload.email,
       password: payload.password,
-      role: "OWNER",
-      vehicles: payload.vehicles,
+      role: payload.role,
+      vehicles: payload.vehicles ?? [],
     }),
   });
 
