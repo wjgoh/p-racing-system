@@ -590,7 +590,8 @@ if (req.method === "POST" && url.pathname === "/api/register") {
                 mech.name AS assigned_mechanic_name,
                 v.make, v.model, v.year, v.plate_number
          FROM jobs j
-         LEFT JOIN users owner ON owner.user_id = j.owner_id
+         LEFT JOIN vehicle_owners vo ON vo.owner_id = j.owner_id
+         LEFT JOIN users owner ON owner.user_id = vo.user_id
          LEFT JOIN users mech ON mech.user_id = j.assigned_mechanic_id
          LEFT JOIN vehicles v ON v.vehicle_id = j.vehicle_id
          ${whereClause}
@@ -621,7 +622,8 @@ if (req.method === "POST" && url.pathname === "/api/register") {
                 mech.name AS assigned_mechanic_name,
                 v.make, v.model, v.year, v.plate_number
          FROM jobs j
-         LEFT JOIN users owner ON owner.user_id = j.owner_id
+         LEFT JOIN vehicle_owners vo ON vo.owner_id = j.owner_id
+         LEFT JOIN users owner ON owner.user_id = vo.user_id
          LEFT JOIN users mech ON mech.user_id = j.assigned_mechanic_id
          LEFT JOIN vehicles v ON v.vehicle_id = j.vehicle_id
          WHERE j.assigned_mechanic_id = ?
@@ -707,7 +709,8 @@ if (req.method === "POST" && url.pathname === "/api/register") {
                 v.make, v.model, v.year, v.plate_number
          FROM invoices i
          LEFT JOIN jobs j ON j.job_id = i.job_id
-         LEFT JOIN users owner ON owner.user_id = i.owner_id
+         LEFT JOIN vehicle_owners vo ON vo.owner_id = i.owner_id
+         LEFT JOIN users owner ON owner.user_id = vo.user_id
          LEFT JOIN users mech ON mech.user_id = j.assigned_mechanic_id
          LEFT JOIN vehicles v ON v.vehicle_id = j.vehicle_id
          ${whereClause}
