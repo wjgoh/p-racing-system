@@ -5,6 +5,7 @@ import { Label } from "./ui/label";
 import { Card } from "./ui/card";
 import { Checkbox } from "./ui/checkbox";
 import { Eye, EyeOff, Lock, Mail } from "lucide-react";
+import { apiLogin } from "./api/auth"; // <-- adjust path if needed
 
 interface LoginFormProps {
   onSwitchToRegister: () => void;
@@ -14,47 +15,55 @@ interface LoginFormProps {
   onOwnerLogin: () => void;
 }
 
-export function LoginForm({ onSwitchToRegister, onAdminLogin, onMechanicLogin, onWorkshopLogin, onOwnerLogin }: LoginFormProps) {
+export function LoginForm({
+  onSwitchToRegister,
+  onAdminLogin,
+  onMechanicLogin,
+  onWorkshopLogin,
+  onOwnerLogin,
+}: LoginFormProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    // Check for admin credentials (allow "admin" without @ or "admin@admin.com")
-    if ((email === "admin" || email === "admin@admin.com") && password === "admin") {
-      onAdminLogin();
-      return;
+    setError(null);
+    setLoading(true);
+
+    try {
+      const user = await apiLogin(email, password);
+
+      // store user (you can store always, or only when rememberMe is checked)
+      if (rememberMe) localStorage.setItem("user", JSON.stringify(user));
+      else sessionStorage.setItem("user", JSON.stringify(user));
+
+      // route by role
+      switch (user.role) {
+        case "ADMIN":
+          onAdminLogin();
+          break;
+        case "MECHANIC":
+          onMechanicLogin();
+          break;
+        case "ADVISOR":
+          // You named it onWorkshopLogin; if this is for advisor/workshop staff,
+          // map it here. Or rename the prop later.
+          onWorkshopLogin();
+          break;
+        case "OWNER":
+        default:
+          onOwnerLogin();
+          break;
+      }
+    } catch (err: any) {
+      setError(err?.message ?? "Login failed");
+    } finally {
+      setLoading(false);
     }
-    
-    // Check for mechanic credentials
-    if (email === "mechanics@mechanics.com" && password === "mechanic") {
-      onMechanicLogin();
-      return;
-    }
-    
-    // Check for workshop credentials
-    if (email === "workshop@workshop.com" && password === "workshop") {
-      onWorkshopLogin();
-      return;
-    }
-    
-    // Check for vehicle owner credentials
-    if (email === "owner@owner.com" && password === "owner") {
-      onOwnerLogin();
-      return;
-    }
-    
-    // For any other credentials, log in as vehicle owner
-    if (email && password) {
-      onOwnerLogin();
-      return;
-    }
-    
-    // Handle regular login logic here
-    console.log("Login submitted:", { email, password, rememberMe });
   };
 
   return (
@@ -101,11 +110,7 @@ export function LoginForm({ onSwitchToRegister, onAdminLogin, onMechanicLogin, o
               onClick={() => setShowPassword(!showPassword)}
               className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
             >
-              {showPassword ? (
-                <EyeOff className="h-4 w-4" />
-              ) : (
-                <Eye className="h-4 w-4" />
-              )}
+              {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
         </div>
@@ -117,13 +122,11 @@ export function LoginForm({ onSwitchToRegister, onAdminLogin, onMechanicLogin, o
               checked={rememberMe}
               onCheckedChange={(checked) => setRememberMe(checked as boolean)}
             />
-            <Label
-              htmlFor="remember"
-              className="text-sm font-normal cursor-pointer"
-            >
+            <Label htmlFor="remember" className="text-sm font-normal cursor-pointer">
               Remember me
             </Label>
           </div>
+
           <a
             href="#"
             className="text-sm text-primary hover:underline"
@@ -136,12 +139,12 @@ export function LoginForm({ onSwitchToRegister, onAdminLogin, onMechanicLogin, o
           </a>
         </div>
 
-        <Button type="submit" className="w-full">
-          Sign in
+        {error && <p className="text-sm text-red-500">{error}</p>}
+
+        <Button type="submit" className="w-full" disabled={loading}>
+          {loading ? "Signing in..." : "Sign in"}
         </Button>
       </form>
-
-      {/* Demo credentials removed from UI */}
 
       <div className="text-center text-sm">
         <span className="text-muted-foreground">Don't have an account? </span>
