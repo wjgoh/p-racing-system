@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card } from "../ui/card";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
@@ -29,9 +29,15 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { format } from "date-fns";
+import {
+  apiListBookings,
+  apiUpdateBookingStatus,
+  type Booking,
+} from "../api/bookings";
+import { getStoredUser } from "../api/session";
 
 interface Reservation {
-  id: string;
+  bookingId: number;
   customerName: string;
   customerEmail: string;
   customerPhone: string;
@@ -39,91 +45,96 @@ interface Reservation {
   serviceType: string;
   requestedDate: Date;
   requestedTime: string;
-  status: "pending" | "confirmed" | "rejected" | "completed";
+  status: "pending" | "confirmed" | "rejected" | "completed" | "in-progress";
   notes?: string;
   createdAt: Date;
 }
 
-const mockReservations: Reservation[] = [
-  {
-    id: "R001",
-    customerName: "Alice Cooper",
-    customerEmail: "alice@example.com",
-    customerPhone: "+1 (555) 123-4567",
-    vehicle: "BMW X5 2021",
-    serviceType: "Annual Service",
-    requestedDate: new Date("2026-01-24"),
-    requestedTime: "10:00 AM",
-    status: "pending",
-    notes: "Customer prefers morning slot",
-    createdAt: new Date("2026-01-22T08:00:00"),
-  },
-  {
-    id: "R002",
-    customerName: "Bob Williams",
-    customerEmail: "bob@example.com",
-    customerPhone: "+1 (555) 234-5678",
-    vehicle: "Mercedes C-Class 2020",
-    serviceType: "Engine Diagnostic",
-    requestedDate: new Date("2026-01-23"),
-    requestedTime: "2:00 PM",
-    status: "confirmed",
-    createdAt: new Date("2026-01-21T15:30:00"),
-  },
-  {
-    id: "R003",
-    customerName: "Carol Martinez",
-    customerEmail: "carol@example.com",
-    customerPhone: "+1 (555) 345-6789",
-    vehicle: "Audi A4 2019",
-    serviceType: "Brake Replacement",
-    requestedDate: new Date("2026-01-25"),
-    requestedTime: "9:00 AM",
-    status: "pending",
-    notes: "Urgent - brake warning light on",
-    createdAt: new Date("2026-01-22T11:20:00"),
-  },
-  {
-    id: "R004",
-    customerName: "David Chen",
-    customerEmail: "david@example.com",
-    customerPhone: "+1 (555) 456-7890",
-    vehicle: "Lexus RX 2022",
-    serviceType: "Oil Change",
-    requestedDate: new Date("2026-01-23"),
-    requestedTime: "11:00 AM",
-    status: "rejected",
-    notes: "Slot unavailable - offered alternative",
-    createdAt: new Date("2026-01-20T09:15:00"),
-  },
-];
-
 export function ReservationQueue() {
-  const [reservations, setReservations] = useState<Reservation[]>(mockReservations);
+  const [reservations, setReservations] = useState<Reservation[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [detailsDialogOpen, setDetailsDialogOpen] = useState(false);
   const [selectedReservation, setSelectedReservation] = useState<Reservation | null>(
     null
   );
 
+  function mapBookingToReservation(booking: Booking): Reservation {
+    const year = booking.year ? `${booking.year} ` : "";
+    const make = booking.make ?? "";
+    const model = booking.model ?? "";
+    const plate = booking.plate_number ? ` (${booking.plate_number})` : "";
+    const vehicle = `${year}${make} ${model}`.trim() + plate;
+
+    return {
+      bookingId: booking.booking_id,
+      customerName: booking.customer_name ?? "Customer",
+      customerEmail: booking.customer_email ?? "-",
+      customerPhone: booking.customer_phone ?? "-",
+      vehicle: vehicle || "Vehicle",
+      serviceType: booking.service_type ?? "-",
+      requestedDate: booking.preferred_date
+        ? new Date(booking.preferred_date)
+        : new Date(),
+      requestedTime: booking.preferred_time ?? "-",
+      status: booking.status,
+      notes: booking.description ?? undefined,
+      createdAt: booking.created_at ? new Date(booking.created_at) : new Date(),
+    };
+  }
+
+  useEffect(() => {
+    const user = getStoredUser();
+    if (!user || !user.workshop_id) {
+      setError("Workshop account not linked to a workshop.");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    apiListBookings({ workshopId: user.workshop_id })
+      .then((bookingList) => {
+        const mapped = bookingList.map(mapBookingToReservation);
+        setReservations(mapped);
+      })
+      .catch((err: any) => {
+        setError(err?.message ?? "Failed to load reservations");
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
   const filteredReservations = reservations
     .filter((res) => filterStatus === "all" || res.status === filterStatus)
     .sort((a, b) => {
-      // Sort by status priority: pending > confirmed > rejected > completed
-      const statusOrder = { pending: 0, confirmed: 1, rejected: 2, completed: 3 };
+      // Sort by status priority
+      const statusOrder = {
+        pending: 0,
+        confirmed: 1,
+        "in-progress": 2,
+        rejected: 3,
+        completed: 4,
+      } as const;
       return statusOrder[a.status] - statusOrder[b.status];
     });
 
   const handleUpdateStatus = (
-    reservationId: string,
+    bookingId: number,
     newStatus: "confirmed" | "rejected"
   ) => {
-    setReservations(
-      reservations.map((res) =>
-        res.id === reservationId ? { ...res, status: newStatus } : res
-      )
-    );
-    setDetailsDialogOpen(false);
+    apiUpdateBookingStatus({ bookingId, status: newStatus })
+      .then(() => {
+        setReservations(
+          reservations.map((res) =>
+            res.bookingId === bookingId ? { ...res, status: newStatus } : res
+          )
+        );
+        setDetailsDialogOpen(false);
+      })
+      .catch((err: any) => {
+        setError(err?.message ?? "Failed to update status");
+      });
   };
 
   const getStatusColor = (status: string) => {
@@ -132,6 +143,8 @@ export function ReservationQueue() {
         return "bg-yellow-100 text-yellow-700 border-yellow-200";
       case "confirmed":
         return "bg-green-100 text-green-700 border-green-200";
+      case "in-progress":
+        return "bg-blue-100 text-blue-700 border-blue-200";
       case "rejected":
         return "bg-red-100 text-red-700 border-red-200";
       case "completed":
@@ -146,6 +159,7 @@ export function ReservationQueue() {
       case "pending":
         return <AlertCircle className="h-4 w-4" />;
       case "confirmed":
+      case "in-progress":
         return <CheckCircle className="h-4 w-4" />;
       case "rejected":
         return <XCircle className="h-4 w-4" />;
@@ -167,6 +181,9 @@ export function ReservationQueue() {
           Manage customer service reservations and appointments
         </p>
       </div>
+
+      {error && <p className="text-sm text-red-500">{error}</p>}
+      {loading && <p className="text-sm text-muted-foreground">Loading...</p>}
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -219,12 +236,12 @@ export function ReservationQueue() {
       {/* Reservations List */}
       <div className="space-y-4">
         {filteredReservations.map((reservation) => (
-          <Card key={reservation.id} className="p-4 md:p-6">
+          <Card key={reservation.bookingId} className="p-4 md:p-6">
             <div className="space-y-4">
               <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
                 <div className="space-y-3 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="font-semibold text-lg">#{reservation.id}</h3>
+                    <h3 className="font-semibold text-lg">#{reservation.bookingId}</h3>
                     <Badge className={getStatusColor(reservation.status)}>
                       {getStatusIcon(reservation.status)}
                       <span className="ml-1">{reservation.status}</span>
@@ -284,7 +301,7 @@ export function ReservationQueue() {
                   {reservation.status === "pending" && (
                     <>
                       <Button
-                        onClick={() => handleUpdateStatus(reservation.id, "confirmed")}
+                        onClick={() => handleUpdateStatus(reservation.bookingId, "confirmed")}
                         className="flex-1 md:flex-none gap-2"
                       >
                         <CheckCircle className="h-4 w-4" />
@@ -292,7 +309,7 @@ export function ReservationQueue() {
                       </Button>
                       <Button
                         variant="destructive"
-                        onClick={() => handleUpdateStatus(reservation.id, "rejected")}
+                        onClick={() => handleUpdateStatus(reservation.bookingId, "rejected")}
                         className="flex-1 md:flex-none gap-2"
                       >
                         <XCircle className="h-4 w-4" />
@@ -317,7 +334,7 @@ export function ReservationQueue() {
       <Dialog open={detailsDialogOpen} onOpenChange={setDetailsDialogOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Reservation Details - #{selectedReservation?.id}</DialogTitle>
+            <DialogTitle>Reservation Details - #{selectedReservation?.bookingId}</DialogTitle>
           </DialogHeader>
           {selectedReservation && (
             <div className="space-y-4 py-4">
@@ -394,7 +411,7 @@ export function ReservationQueue() {
                   variant="destructive"
                   onClick={() =>
                     selectedReservation &&
-                    handleUpdateStatus(selectedReservation.id, "rejected")
+                    handleUpdateStatus(selectedReservation.bookingId, "rejected")
                   }
                   className="gap-2"
                 >
@@ -404,7 +421,7 @@ export function ReservationQueue() {
                 <Button
                   onClick={() =>
                     selectedReservation &&
-                    handleUpdateStatus(selectedReservation.id, "confirmed")
+                    handleUpdateStatus(selectedReservation.bookingId, "confirmed")
                   }
                   className="gap-2"
                 >

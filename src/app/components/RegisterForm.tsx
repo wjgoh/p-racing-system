@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -12,7 +12,7 @@ import {
   SelectValue,
 } from "./ui/select";
 import { Eye, EyeOff, Lock, Mail, User, Car, Trash2, Plus } from "lucide-react";
-import { apiRegister } from "./api/auth"; // <-- adjust path if needed
+import { apiListWorkshops, apiRegister, type Workshop } from "./api/auth"; // <-- adjust path if needed
 
 interface RegisterFormProps {
   onSwitchToLogin: () => void;
@@ -36,6 +36,16 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [agreeToTerms, setAgreeToTerms] = useState(false);
   const [role, setRole] = useState<"" | "OWNER" | "MECHANIC" | "WORKSHOP">("");
+  const [workshops, setWorkshops] = useState<Workshop[]>([]);
+  const [workshopsLoading, setWorkshopsLoading] = useState(false);
+  const [workshopsError, setWorkshopsError] = useState<string | null>(null);
+  const [workshopId, setWorkshopId] = useState("");
+  const [workshopName, setWorkshopName] = useState("");
+  const [workshopEmail, setWorkshopEmail] = useState("");
+  const [workshopPhone, setWorkshopPhone] = useState("");
+  const [workshopAddress, setWorkshopAddress] = useState("");
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   
   // Car details - now an array
   const [vehicles, setVehicles] = useState<Vehicle[]>([
@@ -66,37 +76,79 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
     ));
   };
 
+  useEffect(() => {
+    if (role !== "MECHANIC") return;
+    let ignore = false;
+
+    setWorkshopsLoading(true);
+    setWorkshopsError(null);
+    apiListWorkshops()
+      .then((list) => {
+        if (!ignore) setWorkshops(list);
+      })
+      .catch((err: any) => {
+        if (!ignore) setWorkshopsError(err?.message ?? "Failed to load workshops");
+      })
+      .finally(() => {
+        if (!ignore) setWorkshopsLoading(false);
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [role]);
+
   const handleSubmit = async (e: React.FormEvent) => {
   e.preventDefault();
+  setSubmitError(null);
 
   if (!role) {
-    console.error("Role is required");
+    setSubmitError("Please choose a role.");
+    return;
+  }
+
+  if (role === "WORKSHOP" && !workshopName.trim()) {
+    setSubmitError("Workshop name is required.");
     return;
   }
 
   if (password !== confirmPassword) {
-    console.error("Passwords don't match");
+    setSubmitError("Passwords don't match.");
     return;
   }
 
   if (!agreeToTerms) {
-    console.error("Must agree to terms");
+    setSubmitError("You must agree to the terms.");
     return;
   }
 
   try {
+    setSubmitting(true);
     await apiRegister({
       name,
       email,
       password,
       role,
       vehicles: role === "OWNER" ? vehicles : [],
+      workshopId:
+        role === "MECHANIC" && workshopId ? Number(workshopId) : null,
+      workshop:
+        role === "WORKSHOP"
+          ? {
+              name: workshopName.trim(),
+              email: workshopEmail.trim() || undefined,
+              phone: workshopPhone.trim() || undefined,
+              address: workshopAddress.trim() || undefined,
+            }
+          : undefined,
     });
 
     // After successful register, go to login page
     onSwitchToLogin();
   } catch (err: any) {
-    console.error(err?.message ?? "Register failed");
+    setSubmitError(err?.message ?? "Register failed");
+  } finally {
+    setSubmitting(false);
   }
 };
 
@@ -332,6 +384,102 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
               </div>
             </div>
           )}
+
+          {role === "WORKSHOP" && (
+            <div className="space-y-4 lg:border-l lg:pl-8">
+              <h2 className="text-lg font-medium">Workshop Information</h2>
+
+              <div className="space-y-2">
+                <Label htmlFor="workshop-name">Workshop Name</Label>
+                <Input
+                  id="workshop-name"
+                  type="text"
+                  placeholder="FastFix Auto"
+                  value={workshopName}
+                  onChange={(e) => setWorkshopName(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="workshop-email">Workshop Email (optional)</Label>
+                <Input
+                  id="workshop-email"
+                  type="email"
+                  placeholder="workshop@example.com"
+                  value={workshopEmail}
+                  onChange={(e) => setWorkshopEmail(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="workshop-phone">Phone (optional)</Label>
+                <Input
+                  id="workshop-phone"
+                  type="text"
+                  placeholder="(123) 456-7890"
+                  value={workshopPhone}
+                  onChange={(e) => setWorkshopPhone(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="workshop-address">Address (optional)</Label>
+                <Input
+                  id="workshop-address"
+                  type="text"
+                  placeholder="123 Main St, City"
+                  value={workshopAddress}
+                  onChange={(e) => setWorkshopAddress(e.target.value)}
+                />
+              </div>
+            </div>
+          )}
+
+          {role === "MECHANIC" && (
+            <div className="space-y-4 lg:border-l lg:pl-8">
+              <h2 className="text-lg font-medium">Workshop Assignment</h2>
+
+              {workshopsLoading && (
+                <p className="text-sm text-muted-foreground">Loading workshops...</p>
+              )}
+              {workshopsError && (
+                <p className="text-sm text-red-500">{workshopsError}</p>
+              )}
+
+              <div className="space-y-2">
+                <Label htmlFor="workshop">Workshop</Label>
+                <Select
+                  value={workshopId}
+                  onValueChange={setWorkshopId}
+                  disabled={workshops.length === 0}
+                >
+                  <SelectTrigger id="workshop" className="w-full">
+                    <SelectValue
+                      placeholder={
+                        workshops.length > 0
+                          ? "Select a workshop"
+                          : "No workshops available"
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {workshops.map((workshop) => (
+                      <SelectItem
+                        key={workshop.workshop_id}
+                        value={String(workshop.workshop_id)}
+                      >
+                        {workshop.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Optional: you can assign a workshop later.
+                </p>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex items-start space-x-2 pt-4 border-t">
@@ -370,8 +518,10 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
           </Label>
         </div>
 
-        <Button type="submit" className="w-full" disabled={!role}>
-          Create account
+        {submitError && <p className="text-sm text-red-500">{submitError}</p>}
+
+        <Button type="submit" className="w-full" disabled={!role || submitting}>
+          {submitting ? "Creating account..." : "Create account"}
         </Button>
       </form>
 
