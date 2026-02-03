@@ -29,11 +29,8 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { format } from "date-fns";
-import {
-  apiListBookings,
-  apiUpdateBookingStatus,
-  type Booking,
-} from "../api/bookings";
+import { apiListBookings, apiUpdateBookingStatus, type Booking } from "../api/bookings";
+import { apiCreateJobFromBooking } from "../api/jobs";
 import { getStoredUser } from "../api/session";
 
 interface Reservation {
@@ -54,11 +51,26 @@ export function ReservationQueue() {
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [creatingJob, setCreatingJob] = useState(false);
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [detailsDialogOpen, setDetailsDialogOpen] = useState(false);
   const [selectedReservation, setSelectedReservation] = useState<Reservation | null>(
     null
   );
+
+  const loadBookings = (workshopId: number) => {
+    setLoading(true);
+    setError(null);
+    apiListBookings({ workshopId })
+      .then((bookingList) => {
+        const mapped = bookingList.map(mapBookingToReservation);
+        setReservations(mapped);
+      })
+      .catch((err: any) => {
+        setError(err?.message ?? "Failed to load reservations");
+      })
+      .finally(() => setLoading(false));
+  };
 
   function mapBookingToReservation(booking: Booking): Reservation {
     const year = booking.year ? `${booking.year} ` : "";
@@ -91,18 +103,7 @@ export function ReservationQueue() {
       return;
     }
 
-    setLoading(true);
-    setError(null);
-
-    apiListBookings({ workshopId: user.workshop_id })
-      .then((bookingList) => {
-        const mapped = bookingList.map(mapBookingToReservation);
-        setReservations(mapped);
-      })
-      .catch((err: any) => {
-        setError(err?.message ?? "Failed to load reservations");
-      })
-      .finally(() => setLoading(false));
+    loadBookings(user.workshop_id);
   }, []);
 
   const filteredReservations = reservations
@@ -125,16 +126,31 @@ export function ReservationQueue() {
   ) => {
     apiUpdateBookingStatus({ bookingId, status: newStatus })
       .then(() => {
-        setReservations(
-          reservations.map((res) =>
-            res.bookingId === bookingId ? { ...res, status: newStatus } : res
-          )
-        );
+        const user = getStoredUser();
+        if (user?.workshop_id) loadBookings(user.workshop_id);
         setDetailsDialogOpen(false);
       })
       .catch((err: any) => {
         setError(err?.message ?? "Failed to update status");
       });
+  };
+
+  const handleCreateJob = () => {
+    if (!selectedReservation) return;
+    const user = getStoredUser();
+    if (!user || !user.workshop_id) {
+      setError("Workshop account not linked to a workshop.");
+      return;
+    }
+
+    setCreatingJob(true);
+    setError(null);
+    apiCreateJobFromBooking({ bookingId: selectedReservation.bookingId })
+      .then(() => loadBookings(user.workshop_id as number))
+      .catch((err: any) => {
+        setError(err?.message ?? "Failed to create job");
+      })
+      .finally(() => setCreatingJob(false));
   };
 
   const getStatusColor = (status: string) => {
@@ -408,6 +424,13 @@ export function ReservationQueue() {
                   Close
                 </Button>
                 <Button
+                  variant="outline"
+                  onClick={handleCreateJob}
+                  disabled={creatingJob}
+                >
+                  {creatingJob ? "Creating..." : "Create Job"}
+                </Button>
+                <Button
                   variant="destructive"
                   onClick={() =>
                     selectedReservation &&
@@ -431,7 +454,20 @@ export function ReservationQueue() {
               </>
             )}
             {selectedReservation?.status !== "pending" && (
-              <Button onClick={() => setDetailsDialogOpen(false)}>Close</Button>
+              <>
+                <Button variant="outline" onClick={() => setDetailsDialogOpen(false)}>
+                  Close
+                </Button>
+                {selectedReservation?.status !== "rejected" && (
+                  <Button
+                    onClick={handleCreateJob}
+                    disabled={creatingJob}
+                    className="gap-2"
+                  >
+                    {creatingJob ? "Creating..." : "Create Job"}
+                  </Button>
+                )}
+              </>
             )}
           </DialogFooter>
         </DialogContent>

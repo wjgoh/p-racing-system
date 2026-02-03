@@ -1,13 +1,18 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { MechanicHeader } from "./mechanic/MechanicHeader";
 import { JobList } from "./mechanic/JobList";
 import { JobDetails } from "./mechanic/JobDetails";
+import { Card } from "./ui/card";
+import { Button } from "./ui/button";
+import { apiListMechanicJobs, type MechanicJob } from "./api/mechanic";
+import { getStoredUser } from "./api/session";
 
 interface MechanicDashboardProps {
   onLogout: () => void;
 }
 
 export interface Job {
+  jobId: number;
   id: string;
   vehicleOwner: string;
   vehicleMake: string;
@@ -35,105 +40,81 @@ export interface Job {
   notes: string;
 }
 
+const formatJobId = (jobId: number) => `JOB-${String(jobId).padStart(3, "0")}`;
+
+const mapJobStatus = (status: MechanicJob["status"]): Job["status"] => {
+  if (status === "assigned" || status === "unassigned") return "pending";
+  return status;
+};
+
+const mapMechanicJob = (job: MechanicJob): Job => {
+  return {
+    jobId: job.job_id,
+    id: formatJobId(job.job_id),
+    vehicleOwner: job.owner_name ?? "Unknown Owner",
+    vehicleMake: job.make ?? "-",
+    vehicleModel: job.model ?? "-",
+    vehicleYear: job.year ?? "-",
+    licensePlate: job.plate_number ?? "-",
+    serviceType: job.service_type ?? "Service",
+    description: job.description ?? "",
+    priority: job.priority,
+    status: mapJobStatus(job.status),
+    scheduledDate: job.scheduled_date ?? "Not scheduled",
+    estimatedTime: job.estimated_time ?? "Not set",
+    assignedMechanic: job.assigned_mechanic_name ?? "",
+    parts: (job.parts ?? []).map((part) => ({
+      id: String(part.part_id),
+      name: part.name,
+      quantity: part.quantity,
+      cost: Number(part.unit_cost ?? 0),
+    })),
+    repairs: (job.repairs ?? []).map((repair) => ({
+      id: String(repair.repair_id),
+      description: repair.description,
+      timestamp: repair.logged_at
+        ? new Date(repair.logged_at).toLocaleString()
+        : "",
+    })),
+    notes: job.notes ?? "",
+  };
+};
+
 export function MechanicDashboard({ onLogout }: MechanicDashboardProps) {
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
-  const [jobs, setJobs] = useState<Job[]>([
-    {
-      id: "JOB-001",
-      vehicleOwner: "Sarah Johnson",
-      vehicleMake: "Toyota",
-      vehicleModel: "Camry",
-      vehicleYear: "2020",
-      licensePlate: "ABC-1234",
-      serviceType: "Oil Change & Inspection",
-      description: "Regular oil change and general vehicle inspection",
-      priority: "medium",
-      status: "pending",
-      scheduledDate: "2026-01-22",
-      estimatedTime: "1.5 hours",
-      assignedMechanic: "Mike Smith",
-      parts: [],
-      repairs: [],
-      notes: "",
-    },
-    {
-      id: "JOB-002",
-      vehicleOwner: "John Davis",
-      vehicleMake: "Honda",
-      vehicleModel: "Accord",
-      vehicleYear: "2019",
-      licensePlate: "XYZ-5678",
-      serviceType: "Brake Replacement",
-      description: "Front brake pads and rotors replacement",
-      priority: "high",
-      status: "in-progress",
-      scheduledDate: "2026-01-21",
-      estimatedTime: "2 hours",
-      assignedMechanic: "Mike Smith",
-      parts: [
-        { id: "1", name: "Brake Pads (Front)", quantity: 1, cost: 85 },
-        { id: "2", name: "Brake Rotors (Front)", quantity: 2, cost: 120 },
-      ],
-      repairs: [
-        {
-          id: "1",
-          description: "Removed old brake pads and rotors",
-          timestamp: "2026-01-21 09:30",
-        },
-      ],
-      notes: "Customer reported squeaking noise when braking",
-    },
-    {
-      id: "JOB-003",
-      vehicleOwner: "Emily Wilson",
-      vehicleMake: "Ford",
-      vehicleModel: "F-150",
-      vehicleYear: "2021",
-      licensePlate: "DEF-9012",
-      serviceType: "Engine Diagnostic",
-      description: "Check engine light diagnostic and repair",
-      priority: "high",
-      status: "pending",
-      scheduledDate: "2026-01-22",
-      estimatedTime: "2.5 hours",
-      assignedMechanic: "Mike Smith",
-      parts: [],
-      repairs: [],
-      notes: "Check engine light on, customer reports rough idle",
-    },
-    {
-      id: "JOB-004",
-      vehicleOwner: "Michael Brown",
-      vehicleMake: "Chevrolet",
-      vehicleModel: "Silverado",
-      vehicleYear: "2018",
-      licensePlate: "GHI-3456",
-      serviceType: "Tire Rotation",
-      description: "Rotate all four tires",
-      priority: "low",
-      status: "completed",
-      scheduledDate: "2026-01-20",
-      estimatedTime: "0.5 hours",
-      assignedMechanic: "Mike Smith",
-      parts: [],
-      repairs: [
-        {
-          id: "1",
-          description: "Rotated all four tires",
-          timestamp: "2026-01-20 14:00",
-        },
-        {
-          id: "2",
-          description: "Checked tire pressure and adjusted",
-          timestamp: "2026-01-20 14:15",
-        },
-      ],
-      notes: "",
-    },
-  ]);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [mechanicName, setMechanicName] = useState("Mechanic");
+
+  const loadJobs = async () => {
+    const user = getStoredUser();
+    if (!user) {
+      setError("No active session. Please sign in again.");
+      setLoading(false);
+      return;
+    }
+    setMechanicName(user.name ?? "Mechanic");
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await apiListMechanicJobs(user.user_id);
+      setJobs(data.map(mapMechanicJob));
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to load mechanic jobs");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadJobs();
+  }, []);
 
   const handleUpdateJob = (updatedJob: Job) => {
-    setJobs(jobs.map((job) => (job.id === updatedJob.id ? updatedJob : job)));
+    setJobs((prev) =>
+      prev.map((job) => (job.jobId === updatedJob.jobId ? updatedJob : job))
+    );
     setSelectedJob(updatedJob);
   };
 
@@ -143,10 +124,21 @@ export function MechanicDashboard({ onLogout }: MechanicDashboardProps) {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
-      <MechanicHeader onLogout={onLogout} />
+      <MechanicHeader onLogout={onLogout} mechanicName={mechanicName} />
       
       <main className="container mx-auto px-4 py-6 md:py-8 max-w-7xl">
-        {selectedJob ? (
+        {loading ? (
+          <Card className="p-6 text-center">
+            <p className="text-sm text-muted-foreground">Loading jobs...</p>
+          </Card>
+        ) : error ? (
+          <Card className="p-6 text-center space-y-3">
+            <p className="text-sm text-red-500">{error}</p>
+            <Button variant="outline" size="sm" onClick={loadJobs}>
+              Retry
+            </Button>
+          </Card>
+        ) : selectedJob ? (
           <JobDetails
             job={selectedJob}
             onUpdateJob={handleUpdateJob}

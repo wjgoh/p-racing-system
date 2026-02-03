@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card } from "../ui/card";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
@@ -19,105 +19,98 @@ import {
   DialogFooter,
 } from "../ui/dialog";
 import { Search, UserPlus, Clock, AlertCircle, CheckCircle } from "lucide-react";
+import {
+  apiAssignJob,
+  apiListJobs,
+  apiListMechanics,
+  apiUpdateJobStatus,
+  type Job,
+  type MechanicSummary,
+} from "../api/jobs";
+import { getStoredUser } from "../api/session";
 
-interface Job {
-  id: string;
-  vehicleOwner: string;
-  vehicle: string;
-  serviceType: string;
-  priority: "high" | "medium" | "low";
-  status: "unassigned" | "assigned" | "in-progress" | "completed";
-  assignedMechanic?: string;
-  estimatedHours: number;
-  createdAt: string;
-}
-
-const mockJobs: Job[] = [
-  {
-    id: "J001",
-    vehicleOwner: "John Smith",
-    vehicle: "Toyota Camry 2020",
-    serviceType: "Oil Change & Brake Inspection",
-    priority: "high",
-    status: "unassigned",
-    estimatedHours: 2,
-    createdAt: "2026-01-22T09:00:00",
-  },
-  {
-    id: "J002",
-    vehicleOwner: "Sarah Johnson",
-    vehicle: "Honda Civic 2019",
-    serviceType: "Transmission Repair",
-    priority: "high",
-    status: "unassigned",
-    estimatedHours: 8,
-    createdAt: "2026-01-22T08:30:00",
-  },
-  {
-    id: "J003",
-    vehicleOwner: "Mike Davis",
-    vehicle: "Ford F-150 2021",
-    serviceType: "Tire Rotation",
-    priority: "low",
-    status: "assigned",
-    assignedMechanic: "Tom Wilson",
-    estimatedHours: 1,
-    createdAt: "2026-01-22T07:15:00",
-  },
-  {
-    id: "J004",
-    vehicleOwner: "Emily Brown",
-    vehicle: "Tesla Model 3 2022",
-    serviceType: "Battery Diagnostic",
-    priority: "medium",
-    status: "in-progress",
-    assignedMechanic: "Alex Martinez",
-    estimatedHours: 3,
-    createdAt: "2026-01-21T14:20:00",
-  },
-];
-
-const mockMechanics = [
-  { id: "M001", name: "Tom Wilson", status: "available", currentJobs: 1 },
-  { id: "M002", name: "Alex Martinez", status: "busy", currentJobs: 2 },
-  { id: "M003", name: "Sarah Lee", status: "available", currentJobs: 0 },
-  { id: "M004", name: "John Carter", status: "available", currentJobs: 1 },
-];
+type JobStatus = "unassigned" | "assigned" | "in-progress" | "completed" | "on-hold";
 
 export function JobAssignment() {
-  const [jobs, setJobs] = useState<Job[]>(mockJobs);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [mechanics, setMechanics] = useState<MechanicSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [assignDialogOpen, setAssignDialogOpen] = useState(false);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [selectedMechanic, setSelectedMechanic] = useState("");
+  const [assigning, setAssigning] = useState(false);
+  const [statusUpdating, setStatusUpdating] = useState<number | null>(null);
+
+  const loadData = (workshopId: number) => {
+    setLoading(true);
+    setError(null);
+    Promise.all([apiListJobs({ workshopId }), apiListMechanics(workshopId)])
+      .then(([jobList, mechanicList]) => {
+        setJobs(jobList);
+        setMechanics(mechanicList);
+      })
+      .catch((err: any) => {
+        setError(err?.message ?? "Failed to load jobs");
+      })
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    const user = getStoredUser();
+    if (!user || !user.workshop_id) {
+      setError("Workshop account not linked to a workshop.");
+      return;
+    }
+    loadData(user.workshop_id);
+  }, []);
+
+  const getVehicleLabel = (job: Job) => {
+    const year = job.year ? `${job.year} ` : "";
+    const make = job.make ?? "";
+    const model = job.model ?? "";
+    const plate = job.plate_number ? ` (${job.plate_number})` : "";
+    const label = `${year}${make} ${model}`.trim() + plate;
+    return label || "Vehicle";
+  };
 
   const filteredJobs = jobs.filter((job) => {
+    const search = searchTerm.toLowerCase();
+    const ownerName = (job.owner_name ?? "").toLowerCase();
+    const vehicleLabel = getVehicleLabel(job).toLowerCase();
+    const jobId = String(job.job_id);
     const matchesSearch =
-      job.vehicleOwner.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      job.vehicle.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      job.id.toLowerCase().includes(searchTerm.toLowerCase());
+      ownerName.includes(search) || vehicleLabel.includes(search) || jobId.includes(search);
     const matchesStatus = filterStatus === "all" || job.status === filterStatus;
     return matchesSearch && matchesStatus;
   });
 
   const handleAssignMechanic = () => {
-    if (selectedJob && selectedMechanic) {
-      setJobs(
-        jobs.map((job) =>
-          job.id === selectedJob.id
-            ? {
-                ...job,
-                assignedMechanic: mockMechanics.find((m) => m.id === selectedMechanic)?.name,
-                status: "assigned" as const,
-              }
-            : job
-        )
-      );
-      setAssignDialogOpen(false);
-      setSelectedJob(null);
-      setSelectedMechanic("");
+    if (!selectedJob || !selectedMechanic) return;
+    const user = getStoredUser();
+    if (!user || !user.workshop_id) {
+      setError("Workshop account not linked to a workshop.");
+      return;
     }
+
+    setAssigning(true);
+    setError(null);
+    apiAssignJob({
+      jobId: selectedJob.job_id,
+      mechanicId: Number(selectedMechanic),
+    })
+      .then(() => {
+        loadData(user.workshop_id as number);
+        setAssignDialogOpen(false);
+        setSelectedJob(null);
+        setSelectedMechanic("");
+      })
+      .catch((err: any) => {
+        setError(err?.message ?? "Failed to assign mechanic");
+      })
+      .finally(() => setAssigning(false));
   };
 
   const getPriorityColor = (priority: string) => {
@@ -133,7 +126,7 @@ export function JobAssignment() {
     }
   };
 
-  const getStatusIcon = (status: string) => {
+  const getStatusIcon = (status: JobStatus) => {
     switch (status) {
       case "unassigned":
         return <AlertCircle className="h-4 w-4" />;
@@ -143,9 +136,28 @@ export function JobAssignment() {
         return <Clock className="h-4 w-4" />;
       case "completed":
         return <CheckCircle className="h-4 w-4" />;
+      case "on-hold":
+        return <AlertCircle className="h-4 w-4" />;
       default:
         return null;
     }
+  };
+
+  const handleStatusChange = (jobId: number, status: JobStatus) => {
+    const user = getStoredUser();
+    if (!user || !user.workshop_id) {
+      setError("Workshop account not linked to a workshop.");
+      return;
+    }
+
+    setStatusUpdating(jobId);
+    setError(null);
+    apiUpdateJobStatus({ jobId, status })
+      .then(() => loadData(user.workshop_id as number))
+      .catch((err: any) => {
+        setError(err?.message ?? "Failed to update status");
+      })
+      .finally(() => setStatusUpdating(null));
   };
 
   return (
@@ -156,6 +168,9 @@ export function JobAssignment() {
           Assign mechanics to jobs and manage workload
         </p>
       </div>
+
+      {error && <p className="text-sm text-red-500">{error}</p>}
+      {loading && <p className="text-sm text-muted-foreground">Loading...</p>}
 
       {/* Filters */}
       <Card className="p-4">
@@ -188,40 +203,43 @@ export function JobAssignment() {
 
       {/* Available Mechanics Summary */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {mockMechanics.map((mechanic) => (
-          <Card
-            key={mechanic.id}
-            className={`p-4 ${
-              mechanic.status === "available" ? "border-green-200 bg-green-50" : ""
-            }`}
-          >
-            <div className="space-y-1">
-              <p className="font-medium text-sm">{mechanic.name}</p>
-              <div className="flex items-center justify-between">
-                <Badge
-                  variant={mechanic.status === "available" ? "default" : "secondary"}
-                  className="text-xs"
-                >
-                  {mechanic.status}
-                </Badge>
-                <span className="text-xs text-slate-500">
-                  {mechanic.currentJobs} jobs
-                </span>
+        {mechanics.map((mechanic) => {
+          const status = mechanic.current_jobs >= 2 ? "busy" : "available";
+          return (
+            <Card
+              key={mechanic.user_id}
+              className={`p-4 ${
+                status === "available" ? "border-green-200 bg-green-50" : ""
+              }`}
+            >
+              <div className="space-y-1">
+                <p className="font-medium text-sm">{mechanic.name}</p>
+                <div className="flex items-center justify-between">
+                  <Badge
+                    variant={status === "available" ? "default" : "secondary"}
+                    className="text-xs"
+                  >
+                    {status}
+                  </Badge>
+                  <span className="text-xs text-slate-500">
+                    {mechanic.current_jobs} jobs
+                  </span>
+                </div>
               </div>
-            </div>
-          </Card>
-        ))}
+            </Card>
+          );
+        })}
       </div>
 
       {/* Jobs List */}
       <div className="space-y-4">
         {filteredJobs.map((job) => (
-          <Card key={job.id} className="p-4 md:p-6">
+          <Card key={job.job_id} className="p-4 md:p-6">
             <div className="space-y-4">
               <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
                 <div className="space-y-2 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="font-semibold text-lg">Job #{job.id}</h3>
+                    <h3 className="font-semibold text-lg">Job #{job.job_id}</h3>
                     <Badge className={getPriorityColor(job.priority)}>
                       {job.priority} priority
                     </Badge>
@@ -233,25 +251,25 @@ export function JobAssignment() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
                     <div>
                       <span className="text-slate-500">Customer: </span>
-                      <span className="font-medium">{job.vehicleOwner}</span>
+                      <span className="font-medium">{job.owner_name ?? "Customer"}</span>
                     </div>
                     <div>
                       <span className="text-slate-500">Vehicle: </span>
-                      <span className="font-medium">{job.vehicle}</span>
+                      <span className="font-medium">{getVehicleLabel(job)}</span>
                     </div>
                     <div>
                       <span className="text-slate-500">Service: </span>
-                      <span className="font-medium">{job.serviceType}</span>
+                      <span className="font-medium">{job.service_type ?? "-"}</span>
                     </div>
                     <div>
                       <span className="text-slate-500">Est. Time: </span>
-                      <span className="font-medium">{job.estimatedHours}h</span>
+                      <span className="font-medium">{job.estimated_time ?? "-"}</span>
                     </div>
-                    {job.assignedMechanic && (
+                    {job.assigned_mechanic_name && (
                       <div className="md:col-span-2">
                         <span className="text-slate-500">Assigned to: </span>
                         <span className="font-medium text-blue-600">
-                          {job.assignedMechanic}
+                          {job.assigned_mechanic_name}
                         </span>
                       </div>
                     )}
@@ -265,17 +283,36 @@ export function JobAssignment() {
                     }}
                     className="gap-2 flex-1 md:flex-none"
                     variant={job.status === "unassigned" ? "default" : "outline"}
+                    disabled={job.status === "completed"}
                   >
                     <UserPlus className="h-4 w-4" />
                     {job.status === "unassigned" ? "Assign" : "Reassign"}
                   </Button>
+                  <Select
+                    value={job.status}
+                    onValueChange={(value) => handleStatusChange(job.job_id, value as JobStatus)}
+                  >
+                    <SelectTrigger className="w-full md:w-48">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="unassigned">Unassigned</SelectItem>
+                      <SelectItem value="assigned">Assigned</SelectItem>
+                      <SelectItem value="in-progress">In Progress</SelectItem>
+                      <SelectItem value="on-hold">On Hold</SelectItem>
+                      <SelectItem value="completed">Completed</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {statusUpdating === job.job_id && (
+                    <span className="text-xs text-muted-foreground">Updating...</span>
+                  )}
                 </div>
               </div>
             </div>
           </Card>
         ))}
 
-        {filteredJobs.length === 0 && (
+        {!loading && filteredJobs.length === 0 && (
           <Card className="p-12 text-center">
             <p className="text-slate-500">No jobs found matching your criteria</p>
           </Card>
@@ -287,7 +324,7 @@ export function JobAssignment() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              Assign Mechanic to Job #{selectedJob?.id}
+              Assign Mechanic to Job #{selectedJob?.job_id}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -296,19 +333,19 @@ export function JobAssignment() {
               <div className="p-3 bg-slate-50 rounded-lg space-y-1 text-sm">
                 <p>
                   <span className="text-slate-600">Customer:</span>{" "}
-                  {selectedJob?.vehicleOwner}
+                  {selectedJob?.owner_name ?? "Customer"}
                 </p>
                 <p>
                   <span className="text-slate-600">Vehicle:</span>{" "}
-                  {selectedJob?.vehicle}
+                  {selectedJob ? getVehicleLabel(selectedJob) : "Vehicle"}
                 </p>
                 <p>
                   <span className="text-slate-600">Service:</span>{" "}
-                  {selectedJob?.serviceType}
+                  {selectedJob?.service_type ?? "-"}
                 </p>
                 <p>
                   <span className="text-slate-600">Est. Duration:</span>{" "}
-                  {selectedJob?.estimatedHours} hours
+                  {selectedJob?.estimated_time ?? "-"}
                 </p>
               </div>
             </div>
@@ -319,26 +356,31 @@ export function JobAssignment() {
                   <SelectValue placeholder="Choose a mechanic" />
                 </SelectTrigger>
                 <SelectContent>
-                  {mockMechanics.map((mechanic) => (
-                    <SelectItem key={mechanic.id} value={mechanic.id}>
+                  {mechanics.map((mechanic) => {
+                    const status = mechanic.current_jobs >= 2 ? "busy" : "available";
+                    return (
+                    <SelectItem
+                      key={mechanic.user_id}
+                      value={String(mechanic.user_id)}
+                      disabled={status === "busy"}
+                    >
                       <div className="flex items-center justify-between w-full gap-4">
                         <span>{mechanic.name}</span>
                         <div className="flex items-center gap-2">
                           <Badge
-                            variant={
-                              mechanic.status === "available" ? "default" : "secondary"
-                            }
+                            variant={status === "available" ? "default" : "secondary"}
                             className="text-xs"
                           >
-                            {mechanic.status}
+                            {status}
                           </Badge>
                           <span className="text-xs text-slate-500">
-                            {mechanic.currentJobs} jobs
+                            {mechanic.current_jobs} jobs
                           </span>
                         </div>
                       </div>
                     </SelectItem>
-                  ))}
+                  );
+                  })}
                 </SelectContent>
               </Select>
             </div>
@@ -354,8 +396,11 @@ export function JobAssignment() {
             >
               Cancel
             </Button>
-            <Button onClick={handleAssignMechanic} disabled={!selectedMechanic}>
-              Assign Mechanic
+            <Button
+              onClick={handleAssignMechanic}
+              disabled={!selectedMechanic || assigning}
+            >
+              {assigning ? "Assigning..." : "Assign Mechanic"}
             </Button>
           </DialogFooter>
         </DialogContent>

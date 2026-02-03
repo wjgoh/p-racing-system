@@ -3,9 +3,10 @@ import { LogOut, Wrench } from "lucide-react";
 
 interface MechanicHeaderProps {
   onLogout: () => void;
+  mechanicName?: string;
 }
 
-export function MechanicHeader({ onLogout }: MechanicHeaderProps) {
+export function MechanicHeader({ onLogout, mechanicName }: MechanicHeaderProps) {
   return (
     <header className="bg-card border-b border-border sticky top-0 z-10 shadow-sm">
       <div className="container mx-auto px-4 py-4">
@@ -17,7 +18,7 @@ export function MechanicHeader({ onLogout }: MechanicHeaderProps) {
             <div>
               <h1 className="text-xl md:text-2xl font-bold">Mechanic Portal</h1>
               <p className="text-sm text-muted-foreground hidden sm:block">
-                Mike Smith
+                {mechanicName ?? "Mechanic"}
               </p>
             </div>
           </div>
