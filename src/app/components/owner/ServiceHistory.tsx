@@ -58,7 +58,9 @@ export function ServiceHistory() {
   const [serviceRecords, setServiceRecords] = useState<ServiceRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedRecord, setSelectedRecord] = useState<ServiceRecord | null>(null);
+  const [selectedRecord, setSelectedRecord] = useState<ServiceRecord | null>(
+    null,
+  );
   const [vehicleFilter, setVehicleFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
 
@@ -74,7 +76,9 @@ export function ServiceHistory() {
         const records = await apiGetServiceHistory(user.owner_id);
         setServiceRecords(records);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load service history");
+        setError(
+          err instanceof Error ? err.message : "Failed to load service history",
+        );
       } finally {
         setLoading(false);
       }
@@ -174,7 +178,9 @@ export function ServiceHistory() {
       </div>
 
       {/* Loading/Error States */}
-      {loading && <p className="text-muted-foreground">Loading service history...</p>}
+      {loading && (
+        <p className="text-muted-foreground">Loading service history...</p>
+      )}
       {error && <p className="text-sm text-red-500">{error}</p>}
 
       {/* Stats Grid */}

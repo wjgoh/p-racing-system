@@ -1092,7 +1092,7 @@ const server = http.createServer(async (req, res) => {
          WHERE u.user_id = ? LIMIT 1`,
         [Number(userId)],
       );
-      
+
       if ((users as any[]).length === 0) {
         return sendJson(res, 404, { error: "User not found" });
       }
@@ -1115,11 +1115,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
-      await db.execute("UPDATE users SET name = ?, email = ? WHERE user_id = ?", [
-        name,
-        email,
-        Number(userId),
-      ]);
+      await db.execute(
+        "UPDATE users SET name = ?, email = ? WHERE user_id = ?",
+        [name, email, Number(userId)],
+      );
 
       if (phone) {
         await db.execute(
@@ -1168,9 +1167,14 @@ const server = http.createServer(async (req, res) => {
       const allNotifications = [
         ...(bookings as any[]),
         ...(invoices as any[]),
-      ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      ].sort(
+        (a, b) =>
+          new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+      );
 
-      return sendJson(res, 200, { notifications: allNotifications.slice(0, 10) });
+      return sendJson(res, 200, {
+        notifications: allNotifications.slice(0, 10),
+      });
     } catch (err) {
       console.error(err);
       return sendJson(res, 500, { error: "Server error" });
@@ -1231,7 +1235,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   // PUT /api/report-requests/:id
-  if (req.method === "PUT" && url.pathname.startsWith("/api/report-requests/")) {
+  if (
+    req.method === "PUT" &&
+    url.pathname.startsWith("/api/report-requests/")
+  ) {
     const id = url.pathname.split("/")[3];
     const body = await readBody(req);
     const { status, adminNotes } = body;
@@ -1243,7 +1250,11 @@ const server = http.createServer(async (req, res) => {
     try {
       await db.execute(
         "UPDATE service_bookings SET status = ?, description = CONCAT(description, ?) WHERE booking_id = ?",
-        [status, adminNotes ? `\n\nAdmin Notes: ${adminNotes}` : "", Number(id)],
+        [
+          status,
+          adminNotes ? `\n\nAdmin Notes: ${adminNotes}` : "",
+          Number(id),
+        ],
       );
 
       return sendJson(res, 200, { ok: true });
