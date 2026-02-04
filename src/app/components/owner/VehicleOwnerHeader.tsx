@@ -1,6 +1,7 @@
 import { Menu, LogOut, Bell, User } from "lucide-react";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
+import { getStoredUser } from "../api/session";
 
 interface VehicleOwnerHeaderProps {
   onLogout: () => void;
@@ -8,6 +9,7 @@ interface VehicleOwnerHeaderProps {
 }
 
 export function VehicleOwnerHeader({ onLogout, onMenuToggle }: VehicleOwnerHeaderProps) {
+  const user = getStoredUser();
   return (
     <header className="bg-white border-b border-slate-200 px-4 md:px-6 py-4">
       <div className="flex items-center justify-between">
@@ -22,7 +24,7 @@ export function VehicleOwnerHeader({ onLogout, onMenuToggle }: VehicleOwnerHeade
           </Button>
           <div>
             <h1 className="text-lg md:text-xl font-semibold text-slate-900">
-              Welcome back, John
+              Welcome back, {user?.name ?? "Owner"}
             </h1>
             <p className="text-sm text-slate-500 hidden md:block">
               Manage your vehicles and service requests
