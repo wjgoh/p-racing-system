@@ -107,6 +107,23 @@ async function fetchUserRecord(userId: number) {
     [Number(userId)]
   );
   return (rows as any[])[0] ?? null;
+const SERVICE_INTERVAL_MONTHS = 6;
+const SERVICE_INTERVAL_MILES = 5000;
+
+function formatDateOnly(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function computeNextServiceDate(value: string | null) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const next = new Date(parsed);
+  next.setMonth(next.getMonth() + SERVICE_INTERVAL_MONTHS);
+  return formatDateOnly(next);
 }
 
 async function syncInvoiceForJob(jobId: number, createIfMissing: boolean) {
@@ -875,7 +892,8 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     }
     try {
       const [rows] = await db.execute(
-        `SELECT vehicle_id, owner_id, plate_number, make, model, year, color
+        `SELECT vehicle_id, owner_id, plate_number, make, model, year, color,
+                last_service_date, next_service_date, last_service_mileage, next_service_mileage
          FROM vehicles
          WHERE owner_id = ?
          ORDER BY vehicle_id DESC`,
@@ -891,7 +909,18 @@ if (req.method === "POST" && url.pathname === "/api/register") {
   // POST /api/vehicles
   if (req.method === "POST" && url.pathname === "/api/vehicles") {
     const body = await readBody(req);
-    const { ownerId, plateNumber, make, model, year, color } = body;
+    const {
+      ownerId,
+      plateNumber,
+      make,
+      model,
+      year,
+      color,
+      lastServiceDate,
+      nextServiceDate,
+      lastServiceMileage,
+      nextServiceMileage,
+    } = body;
 
     if (!ownerId || !plateNumber) {
       return sendJson(res, 400, { error: "ownerId and plateNumber required" });
@@ -899,8 +928,10 @@ if (req.method === "POST" && url.pathname === "/api/register") {
 
     try {
       const [result] = await db.execute(
-        `INSERT INTO vehicles (owner_id, plate_number, make, model, year, color)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO vehicles
+         (owner_id, plate_number, make, model, year, color,
+          last_service_date, next_service_date, last_service_mileage, next_service_mileage)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           Number(ownerId),
           plateNumber,
@@ -908,10 +939,144 @@ if (req.method === "POST" && url.pathname === "/api/register") {
           model ?? null,
           year ?? null,
           color ?? null,
+          lastServiceDate ?? null,
+          nextServiceDate ?? null,
+          lastServiceMileage ?? null,
+          nextServiceMileage ?? null,
         ]
       );
       const vehicleId = (result as any).insertId as number;
       return sendJson(res, 201, { vehicle_id: vehicleId });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/vehicles/service
+  if (req.method === "POST" && url.pathname === "/api/vehicles/service") {
+    const body = await readBody(req);
+    const { vehicleId, ownerId, lastServiceDate, lastServiceMileage } = body;
+
+    if (!vehicleId) {
+      return sendJson(res, 400, { error: "vehicleId required" });
+    }
+
+    const lastMileageProvided = lastServiceMileage !== undefined;
+    const lastDateProvided = lastServiceDate !== undefined;
+    if (!lastMileageProvided && !lastDateProvided) {
+      return sendJson(res, 400, {
+        error: "lastServiceDate or lastServiceMileage required",
+      });
+    }
+
+    try {
+      const [rows] = await db.execute(
+        `SELECT owner_id, last_service_date, last_service_mileage
+         FROM vehicles
+         WHERE vehicle_id = ? LIMIT 1`,
+        [Number(vehicleId)]
+      );
+      const vehicle = (rows as any[])[0];
+      if (!vehicle) {
+        return sendJson(res, 404, { error: "Vehicle not found" });
+      }
+      if (ownerId && Number(ownerId) !== Number(vehicle.owner_id)) {
+        return sendJson(res, 403, { error: "Owner mismatch" });
+      }
+
+      const updatedLastDate =
+        lastServiceDate !== undefined
+          ? (lastServiceDate ? String(lastServiceDate) : null)
+          : (vehicle.last_service_date as string | null);
+
+      let updatedLastMileage: number | null =
+        lastServiceMileage !== undefined ? Number(lastServiceMileage) : null;
+      if (lastServiceMileage !== undefined) {
+        if (Number.isNaN(updatedLastMileage)) {
+          return sendJson(res, 400, { error: "lastServiceMileage must be a number" });
+        }
+      } else {
+        updatedLastMileage =
+          vehicle.last_service_mileage !== undefined
+            ? Number(vehicle.last_service_mileage)
+            : null;
+        if (Number.isNaN(updatedLastMileage)) updatedLastMileage = null;
+      }
+
+      const nextServiceDate = updatedLastDate
+        ? computeNextServiceDate(updatedLastDate)
+        : null;
+      const nextServiceMileage =
+        updatedLastMileage !== null
+          ? updatedLastMileage + SERVICE_INTERVAL_MILES
+          : null;
+
+      await db.execute(
+        `UPDATE vehicles
+         SET last_service_date = ?,
+             last_service_mileage = ?,
+             next_service_date = ?,
+             next_service_mileage = ?
+         WHERE vehicle_id = ?`,
+        [
+          updatedLastDate,
+          updatedLastMileage,
+          nextServiceDate,
+          nextServiceMileage,
+          Number(vehicleId),
+        ]
+      );
+
+      return sendJson(res, 200, {
+        ok: true,
+        next_service_date: nextServiceDate,
+        next_service_mileage: nextServiceMileage,
+      });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // GET /api/vehicles/history?vehicleId=123&ownerId=1
+  if (req.method === "GET" && url.pathname === "/api/vehicles/history") {
+    const vehicleId = url.searchParams.get("vehicleId");
+    const ownerId = url.searchParams.get("ownerId");
+    if (!vehicleId) {
+      return sendJson(res, 400, { error: "vehicleId required" });
+    }
+
+    try {
+      const [vehicleRows] = await db.execute(
+        "SELECT owner_id FROM vehicles WHERE vehicle_id = ? LIMIT 1",
+        [Number(vehicleId)]
+      );
+      const vehicle = (vehicleRows as any[])[0];
+      if (!vehicle) {
+        return sendJson(res, 404, { error: "Vehicle not found" });
+      }
+      if (ownerId && Number(ownerId) !== Number(vehicle.owner_id)) {
+        return sendJson(res, 403, { error: "Owner mismatch" });
+      }
+
+      const [rows] = await db.execute(
+        `SELECT j.job_id, j.service_type, j.description,
+                j.updated_at AS completed_at,
+                j.scheduled_date,
+                mech.name AS mechanic_name,
+                MAX(mr.performed_at) AS performed_at,
+                SUM(mr.cost) AS total_cost
+         FROM jobs j
+         LEFT JOIN maintenance_records mr ON mr.job_id = j.job_id
+         LEFT JOIN users mech ON mech.user_id = j.assigned_mechanic_id
+         WHERE j.vehicle_id = ? AND j.status = 'completed'
+         GROUP BY j.job_id, j.service_type, j.description, j.updated_at, j.scheduled_date, mech.name
+         ORDER BY j.updated_at DESC`,
+        [Number(vehicleId)]
+      );
+
+      return sendJson(res, 200, { history: rows });
     } catch (err) {
       console.error(err);
       return sendJson(res, 500, { error: "Server error" });
@@ -1060,6 +1225,528 @@ if (req.method === "POST" && url.pathname === "/api/register") {
             );
           }
         }
+      }
+
+      return sendJson(res, 200, { ok: true });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // GET /api/ratings?ownerId=123
+  if (req.method === "GET" && url.pathname === "/api/ratings") {
+    const ownerId = url.searchParams.get("ownerId");
+    if (!ownerId) {
+      return sendJson(res, 400, { error: "ownerId required" });
+    }
+
+    try {
+      const [rows] = await db.execute(
+        `SELECT sr.rating_id, sr.booking_id, sr.owner_id, sr.workshop_id, sr.mechanic_id,
+                sr.rating, sr.comment, sr.response, sr.created_at, sr.responded_at,
+                COALESCE(j.service_type, b.service_type) AS service_type,
+                b.preferred_date, j.scheduled_date, j.updated_at AS completed_at,
+                v.make, v.model, v.year, v.plate_number
+         FROM service_ratings sr
+         LEFT JOIN service_bookings b ON b.booking_id = sr.booking_id
+         LEFT JOIN jobs j ON j.booking_id = sr.booking_id
+         LEFT JOIN vehicles v ON v.vehicle_id = b.vehicle_id
+         WHERE sr.owner_id = ? AND sr.deleted_at IS NULL
+         ORDER BY sr.created_at DESC`,
+        [Number(ownerId)]
+      );
+      return sendJson(res, 200, { ratings: rows });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // GET /api/ratings/pending?ownerId=123
+  if (req.method === "GET" && url.pathname === "/api/ratings/pending") {
+    const ownerId = url.searchParams.get("ownerId");
+    if (!ownerId) {
+      return sendJson(res, 400, { error: "ownerId required" });
+    }
+
+    try {
+      const [rows] = await db.execute(
+        `SELECT j.job_id, j.booking_id, j.owner_id, j.workshop_id,
+                j.assigned_mechanic_id,
+                COALESCE(j.service_type, b.service_type) AS service_type,
+                b.preferred_date, j.scheduled_date, j.updated_at AS completed_at,
+                v.make, v.model, v.year, v.plate_number
+         FROM jobs j
+         LEFT JOIN service_bookings b ON b.booking_id = j.booking_id
+         LEFT JOIN vehicles v ON v.vehicle_id = b.vehicle_id
+         LEFT JOIN service_ratings sr
+           ON sr.booking_id = j.booking_id AND sr.deleted_at IS NULL
+         WHERE j.owner_id = ?
+           AND j.status = 'completed'
+           AND j.booking_id IS NOT NULL
+           AND sr.rating_id IS NULL
+         ORDER BY j.updated_at DESC`,
+        [Number(ownerId)]
+      );
+      return sendJson(res, 200, { pending: rows });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/ratings
+  if (req.method === "POST" && url.pathname === "/api/ratings") {
+    const body = await readBody(req);
+    const { bookingId, ownerId, rating, comment } = body;
+
+    const numericRating = Number(rating);
+    if (
+      !bookingId ||
+      !ownerId ||
+      Number.isNaN(numericRating) ||
+      numericRating < 1 ||
+      numericRating > 5
+    ) {
+      return sendJson(res, 400, {
+        error: "bookingId, ownerId, and rating (1-5) required",
+      });
+    }
+
+    try {
+      const [bookingRows] = await db.execute(
+        "SELECT booking_id, owner_id, workshop_id FROM service_bookings WHERE booking_id = ? LIMIT 1",
+        [Number(bookingId)]
+      );
+      const booking = (bookingRows as any[])[0];
+      if (!booking) {
+        return sendJson(res, 404, { error: "Booking not found" });
+      }
+      if (Number(booking.owner_id) !== Number(ownerId)) {
+        return sendJson(res, 403, { error: "Owner mismatch" });
+      }
+
+      const [existing] = await db.execute(
+        "SELECT rating_id FROM service_ratings WHERE booking_id = ? AND deleted_at IS NULL LIMIT 1",
+        [Number(bookingId)]
+      );
+      if ((existing as any[])[0]) {
+        return sendJson(res, 409, { error: "Review already submitted" });
+      }
+
+      const [jobRows] = await db.execute(
+        "SELECT assigned_mechanic_id FROM jobs WHERE booking_id = ? LIMIT 1",
+        [Number(bookingId)]
+      );
+      const mechanicId = (jobRows as any[])[0]?.assigned_mechanic_id ?? null;
+      const cleanedComment =
+        typeof comment === "string" && comment.trim() ? comment.trim() : null;
+
+      const [result] = await db.execute(
+        `INSERT INTO service_ratings
+         (booking_id, owner_id, workshop_id, mechanic_id, rating, comment)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          Number(bookingId),
+          Number(booking.owner_id),
+          Number(booking.workshop_id),
+          mechanicId,
+          numericRating,
+          cleanedComment,
+        ]
+      );
+
+      return sendJson(res, 201, { rating_id: (result as any).insertId });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // GET /api/admin/ratings
+  if (req.method === "GET" && url.pathname === "/api/admin/ratings") {
+    try {
+      const [rows] = await db.execute(
+        `SELECT sr.rating_id, sr.booking_id, sr.owner_id, sr.workshop_id, sr.mechanic_id,
+                sr.rating, sr.comment, sr.response, sr.created_at, sr.responded_at,
+                CASE
+                  WHEN sr.response IS NOT NULL AND sr.response <> '' THEN 'resolved'
+                  WHEN sr.responded_at IS NOT NULL THEN 'reviewed'
+                  ELSE 'new'
+                END AS status,
+                COALESCE(j.service_type, b.service_type) AS service_type,
+                b.preferred_date, j.scheduled_date, j.updated_at AS completed_at,
+                v.make, v.model, v.year, v.plate_number,
+                COALESCE(owner.name, b.customer_name, 'Customer') AS customer_name,
+                mech.name AS mechanic_name,
+                w.name AS workshop_name
+         FROM service_ratings sr
+         LEFT JOIN service_bookings b ON b.booking_id = sr.booking_id
+         LEFT JOIN jobs j ON j.booking_id = sr.booking_id
+         LEFT JOIN vehicle_owners vo ON vo.owner_id = sr.owner_id
+         LEFT JOIN users owner ON owner.user_id = vo.user_id
+         LEFT JOIN users mech ON mech.user_id = sr.mechanic_id
+         LEFT JOIN vehicles v ON v.vehicle_id = b.vehicle_id
+         LEFT JOIN workshops w ON w.workshop_id = sr.workshop_id
+         WHERE sr.deleted_at IS NULL
+         ORDER BY sr.created_at DESC`
+      );
+      return sendJson(res, 200, { ratings: rows });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/admin/ratings/update
+  if (req.method === "POST" && url.pathname === "/api/admin/ratings/update") {
+    const body = await readBody(req);
+    const { ratingId, rating, comment, response, status } = body;
+
+    if (!ratingId) {
+      return sendJson(res, 400, { error: "ratingId required" });
+    }
+
+    const updates: string[] = [];
+    const params: Array<string | number | null> = [];
+
+    if (rating !== undefined) {
+      const numericRating = Number(rating);
+      if (Number.isNaN(numericRating) || numericRating < 1 || numericRating > 5) {
+        return sendJson(res, 400, { error: "rating must be 1-5" });
+      }
+      updates.push("rating = ?");
+      params.push(numericRating);
+    }
+
+    if (comment !== undefined) {
+      const cleanedComment =
+        typeof comment === "string" && comment.trim() ? comment.trim() : null;
+      updates.push("comment = ?");
+      params.push(cleanedComment);
+    }
+
+    const statusValue = typeof status === "string" ? status : undefined;
+    const allowedStatus = new Set(["new", "reviewed", "resolved"]);
+    if (statusValue && !allowedStatus.has(statusValue)) {
+      return sendJson(res, 400, { error: "status must be new, reviewed, or resolved" });
+    }
+
+    if (statusValue === "new") {
+      updates.push("responded_at = NULL");
+      updates.push("response = NULL");
+    }
+
+    if (statusValue === "reviewed") {
+      updates.push("responded_at = NOW()");
+      updates.push("response = NULL");
+    }
+
+    if (statusValue === "resolved") {
+      updates.push("responded_at = NOW()");
+    }
+
+    const responseProvided = Object.prototype.hasOwnProperty.call(body, "response");
+    if (responseProvided && statusValue !== "new" && statusValue !== "reviewed") {
+      const cleanedResponse =
+        typeof response === "string" && response.trim() ? response.trim() : null;
+      updates.push("response = ?");
+      params.push(cleanedResponse);
+      if (cleanedResponse) {
+        updates.push("responded_at = NOW()");
+      }
+    }
+
+    if (updates.length === 0) {
+      return sendJson(res, 400, { error: "No updates provided" });
+    }
+
+    try {
+      params.push(Number(ratingId));
+      await db.execute(
+        `UPDATE service_ratings SET ${updates.join(", ")} WHERE rating_id = ?`,
+        params
+      );
+      return sendJson(res, 200, { ok: true });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/admin/ratings/delete
+  if (req.method === "POST" && url.pathname === "/api/admin/ratings/delete") {
+    const body = await readBody(req);
+    const { ratingId } = body;
+    if (!ratingId) {
+      return sendJson(res, 400, { error: "ratingId required" });
+    }
+
+    try {
+      await db.execute(
+        "UPDATE service_ratings SET deleted_at = NOW() WHERE rating_id = ?",
+        [Number(ratingId)]
+      );
+      return sendJson(res, 200, { ok: true });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // GET /api/workshop/ratings?workshopId=5
+  if (req.method === "GET" && url.pathname === "/api/workshop/ratings") {
+    const workshopId = url.searchParams.get("workshopId");
+    if (!workshopId) {
+      return sendJson(res, 400, { error: "workshopId required" });
+    }
+
+    try {
+      const [rows] = await db.execute(
+        `SELECT sr.rating_id, sr.booking_id, sr.owner_id, sr.workshop_id, sr.mechanic_id,
+                sr.rating, sr.comment, sr.response, sr.created_at, sr.responded_at,
+                COALESCE(j.service_type, b.service_type) AS service_type,
+                b.preferred_date, j.scheduled_date, j.updated_at AS completed_at,
+                v.make, v.model, v.year, v.plate_number,
+                COALESCE(owner.name, b.customer_name, 'Customer') AS customer_name,
+                mech.name AS mechanic_name,
+                w.name AS workshop_name
+         FROM service_ratings sr
+         LEFT JOIN service_bookings b ON b.booking_id = sr.booking_id
+         LEFT JOIN jobs j ON j.booking_id = sr.booking_id
+         LEFT JOIN vehicle_owners vo ON vo.owner_id = sr.owner_id
+         LEFT JOIN users owner ON owner.user_id = vo.user_id
+         LEFT JOIN users mech ON mech.user_id = sr.mechanic_id
+         LEFT JOIN vehicles v ON v.vehicle_id = b.vehicle_id
+         LEFT JOIN workshops w ON w.workshop_id = sr.workshop_id
+         WHERE sr.workshop_id = ? AND sr.deleted_at IS NULL
+         ORDER BY sr.created_at DESC`,
+        [Number(workshopId)]
+      );
+      return sendJson(res, 200, { ratings: rows });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/workshop/ratings/response
+  if (req.method === "POST" && url.pathname === "/api/workshop/ratings/response") {
+    const body = await readBody(req);
+    const { ratingId, workshopId, response, status } = body;
+
+    if (!ratingId || !workshopId) {
+      return sendJson(res, 400, { error: "ratingId and workshopId required" });
+    }
+
+    const allowedStatus = new Set(["new", "reviewed", "resolved"]);
+    const statusValue = typeof status === "string" ? status : undefined;
+    if (statusValue && !allowedStatus.has(statusValue)) {
+      return sendJson(res, 400, { error: "status must be new, reviewed, or resolved" });
+    }
+
+    try {
+      const [ratingRows] = await db.execute(
+        "SELECT rating_id FROM service_ratings WHERE rating_id = ? AND workshop_id = ? AND deleted_at IS NULL LIMIT 1",
+        [Number(ratingId), Number(workshopId)]
+      );
+      const ratingRow = (ratingRows as any[])[0];
+      if (!ratingRow) {
+        return sendJson(res, 404, { error: "Rating not found" });
+      }
+
+      const updates: string[] = [];
+      const params: Array<string | number | null> = [];
+
+      const responseProvided = Object.prototype.hasOwnProperty.call(body, "response");
+      const cleanedResponse =
+        typeof response === "string" && response.trim() ? response.trim() : null;
+      const hasResponse = responseProvided && cleanedResponse;
+      const effectiveStatus = hasResponse ? "resolved" : statusValue;
+
+      if (effectiveStatus === "new") {
+        updates.push("responded_at = NULL");
+        if (!responseProvided) {
+          updates.push("response = NULL");
+        }
+      }
+
+      if (effectiveStatus === "reviewed") {
+        updates.push("responded_at = NOW()");
+        if (!responseProvided) {
+          updates.push("response = NULL");
+        }
+      }
+
+      if (effectiveStatus === "resolved") {
+        updates.push("responded_at = NOW()");
+      }
+
+      if (responseProvided) {
+        updates.push("response = ?");
+        params.push(cleanedResponse);
+        if (cleanedResponse) {
+          updates.push("responded_at = NOW()");
+        }
+      }
+
+      if (updates.length === 0) {
+        return sendJson(res, 400, { error: "No updates provided" });
+      }
+
+      params.push(Number(ratingId));
+      await db.execute(
+        `UPDATE service_ratings SET ${updates.join(", ")} WHERE rating_id = ?`,
+        params
+      );
+
+      return sendJson(res, 200, { ok: true });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/workshop/ratings/request-delete
+  if (req.method === "POST" && url.pathname === "/api/workshop/ratings/request-delete") {
+    const body = await readBody(req);
+    const { ratingId, workshopId, requestedBy, reason } = body;
+
+    if (!ratingId || !workshopId) {
+      return sendJson(res, 400, { error: "ratingId and workshopId required" });
+    }
+
+    try {
+      const [ratingRows] = await db.execute(
+        "SELECT rating_id FROM service_ratings WHERE rating_id = ? AND workshop_id = ? AND deleted_at IS NULL LIMIT 1",
+        [Number(ratingId), Number(workshopId)]
+      );
+      const ratingRow = (ratingRows as any[])[0];
+      if (!ratingRow) {
+        return sendJson(res, 404, { error: "Rating not found" });
+      }
+
+      const [existingRows] = await db.execute(
+        "SELECT request_id FROM rating_requests WHERE rating_id = ? AND status = 'pending' LIMIT 1",
+        [Number(ratingId)]
+      );
+      if ((existingRows as any[])[0]) {
+        return sendJson(res, 409, { error: "Request already pending" });
+      }
+
+      const cleanedReason =
+        typeof reason === "string" && reason.trim() ? reason.trim() : null;
+
+      const [result] = await db.execute(
+        `INSERT INTO rating_requests
+         (rating_id, workshop_id, requested_by, reason, status)
+         VALUES (?, ?, ?, ?, 'pending')`,
+        [
+          Number(ratingId),
+          Number(workshopId),
+          requestedBy ? Number(requestedBy) : null,
+          cleanedReason,
+        ]
+      );
+
+      return sendJson(res, 201, { request_id: (result as any).insertId });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // GET /api/workshop/ratings/requests?workshopId=5
+  if (req.method === "GET" && url.pathname === "/api/workshop/ratings/requests") {
+    const workshopId = url.searchParams.get("workshopId");
+    if (!workshopId) {
+      return sendJson(res, 400, { error: "workshopId required" });
+    }
+
+    try {
+      const [rows] = await db.execute(
+        `SELECT rr.request_id, rr.rating_id, rr.workshop_id, rr.requested_by,
+                rr.reason, rr.status, rr.admin_notes, rr.created_at, rr.resolved_at,
+                sr.rating, sr.comment, sr.created_at AS rating_created_at
+         FROM rating_requests rr
+         LEFT JOIN service_ratings sr ON sr.rating_id = rr.rating_id
+         WHERE rr.workshop_id = ?
+         ORDER BY rr.created_at DESC`,
+        [Number(workshopId)]
+      );
+      return sendJson(res, 200, { requests: rows });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // GET /api/admin/rating-requests
+  if (req.method === "GET" && url.pathname === "/api/admin/rating-requests") {
+    try {
+      const [rows] = await db.execute(
+        `SELECT rr.request_id, rr.rating_id, rr.workshop_id, rr.requested_by,
+                rr.reason, rr.status, rr.admin_notes, rr.created_at, rr.resolved_at,
+                sr.rating, sr.comment, sr.response, sr.created_at AS rating_created_at,
+                COALESCE(j.service_type, b.service_type) AS service_type,
+                COALESCE(owner.name, b.customer_name, 'Customer') AS customer_name,
+                mech.name AS mechanic_name,
+                w.name AS workshop_name
+         FROM rating_requests rr
+         LEFT JOIN service_ratings sr ON sr.rating_id = rr.rating_id
+         LEFT JOIN service_bookings b ON b.booking_id = sr.booking_id
+         LEFT JOIN jobs j ON j.booking_id = sr.booking_id
+         LEFT JOIN vehicle_owners vo ON vo.owner_id = sr.owner_id
+         LEFT JOIN users owner ON owner.user_id = vo.user_id
+         LEFT JOIN users mech ON mech.user_id = sr.mechanic_id
+         LEFT JOIN workshops w ON w.workshop_id = rr.workshop_id
+         ORDER BY rr.created_at DESC`
+      );
+      return sendJson(res, 200, { requests: rows });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/admin/rating-requests/resolve
+  if (req.method === "POST" && url.pathname === "/api/admin/rating-requests/resolve") {
+    const body = await readBody(req);
+    const { requestId, action, adminNotes } = body;
+
+    const allowed = new Set(["approved", "rejected", "deleted"]);
+    if (!requestId || !action || !allowed.has(String(action))) {
+      return sendJson(res, 400, { error: "requestId and valid action required" });
+    }
+
+    try {
+      const [rows] = await db.execute(
+        "SELECT request_id, rating_id FROM rating_requests WHERE request_id = ? LIMIT 1",
+        [Number(requestId)]
+      );
+      const request = (rows as any[])[0];
+      if (!request) {
+        return sendJson(res, 404, { error: "Request not found" });
+      }
+
+      const cleanedNotes =
+        typeof adminNotes === "string" && adminNotes.trim()
+          ? adminNotes.trim()
+          : null;
+
+      await db.execute(
+        `UPDATE rating_requests
+         SET status = ?, admin_notes = ?, resolved_at = NOW()
+         WHERE request_id = ?`,
+        [String(action), cleanedNotes, Number(requestId)]
+      );
+
+      if (String(action) === "approved" && request.rating_id) {
+        await db.execute(
+          "UPDATE service_ratings SET deleted_at = NOW() WHERE rating_id = ?",
+          [Number(request.rating_id)]
+        );
       }
 
       return sendJson(res, 200, { ok: true });
