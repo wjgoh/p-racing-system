@@ -30,6 +30,7 @@ import {
   Trash2,
   Save,
 } from "lucide-react";
+import { toast } from "sonner";
 import type { Job } from "../MechanicDashboard";
 import {
   apiAddJobPart,
@@ -198,6 +199,7 @@ export function JobDetails({ job, onUpdateJob, onBack }: JobDetailsProps) {
         notes: currentJob.notes,
       });
       onUpdateJob(currentJob);
+      toast.success("Notes saved.");
     } catch (err: any) {
       setError(err?.message ?? "Failed to save notes");
     } finally {
