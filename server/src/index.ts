@@ -107,6 +107,8 @@ async function fetchUserRecord(userId: number) {
     [Number(userId)]
   );
   return (rows as any[])[0] ?? null;
+}
+
 const SERVICE_INTERVAL_MONTHS = 6;
 const SERVICE_INTERVAL_MILES = 5000;
 

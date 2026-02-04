@@ -11,8 +11,12 @@ interface WorkshopDashboardProps {
   onLogout: () => void;
 }
 
-type WorkshopView = "assignments" | "queue" | "invoices" | "reports";
-type WorkshopView = "assignments" | "queue" | "invoices" | "reviews";
+type WorkshopView =
+  | "assignments"
+  | "queue"
+  | "invoices"
+  | "reports"
+  | "reviews";
 
 export function WorkshopDashboard({ onLogout }: WorkshopDashboardProps) {
   const [currentView, setCurrentView] = useState<WorkshopView>("assignments");
