@@ -237,7 +237,10 @@ export function VehicleOwnerHeader({
       </div>
 
       {/* User Profile Modal */}
-      <UserProfileModal isOpen={isProfileOpen} onClose={() => setIsProfileOpen(false)} />
+      <UserProfileModal
+        isOpen={isProfileOpen}
+        onClose={() => setIsProfileOpen(false)}
+      />
     </header>
   );
 }

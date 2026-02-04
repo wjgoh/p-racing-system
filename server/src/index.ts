@@ -1049,6 +1049,210 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // GET /api/service-history?ownerId=123
+  if (req.method === "GET" && url.pathname === "/api/service-history") {
+    const ownerId = url.searchParams.get("ownerId");
+    if (!ownerId) {
+      return sendJson(res, 400, { error: "ownerId required" });
+    }
+
+    try {
+      const [records] = await db.execute(
+        `SELECT mr.record_id, mr.service_type, mr.description, mr.cost,
+                mr.performed_at, j.vehicle_id, v.make, v.model, v.year, v.plate_number,
+                j.job_id, w.name as workshop_name
+         FROM maintenance_records mr
+         LEFT JOIN jobs j ON mr.job_id = j.job_id
+         LEFT JOIN vehicles v ON j.vehicle_id = v.vehicle_id
+         LEFT JOIN workshops w ON j.workshop_id = w.workshop_id
+         WHERE j.owner_id = ?
+         ORDER BY mr.performed_at DESC`,
+        [Number(ownerId)],
+      );
+      return sendJson(res, 200, { records });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // GET /api/user-profile?userId=123
+  if (req.method === "GET" && url.pathname === "/api/user-profile") {
+    const userId = url.searchParams.get("userId");
+    if (!userId) {
+      return sendJson(res, 400, { error: "userId required" });
+    }
+
+    try {
+      const [users] = await db.execute(
+        `SELECT u.user_id, u.name, u.email, u.role, 
+                vo.owner_id, vo.phone
+         FROM users u
+         LEFT JOIN vehicle_owners vo ON u.user_id = vo.user_id
+         WHERE u.user_id = ? LIMIT 1`,
+        [Number(userId)],
+      );
+      
+      if ((users as any[]).length === 0) {
+        return sendJson(res, 404, { error: "User not found" });
+      }
+
+      return sendJson(res, 200, { user: (users as any[])[0] });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // PUT /api/user-profile/:userId
+  if (req.method === "PUT" && url.pathname.startsWith("/api/user-profile/")) {
+    const userId = url.pathname.split("/")[3];
+    const body = await readBody(req);
+    const { name, email, phone } = body;
+
+    if (!userId) {
+      return sendJson(res, 400, { error: "userId required" });
+    }
+
+    try {
+      await db.execute("UPDATE users SET name = ?, email = ? WHERE user_id = ?", [
+        name,
+        email,
+        Number(userId),
+      ]);
+
+      if (phone) {
+        await db.execute(
+          "UPDATE vehicle_owners SET phone = ? WHERE user_id = ?",
+          [phone, Number(userId)],
+        );
+      }
+
+      return sendJson(res, 200, { ok: true });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // GET /api/notifications?userId=123
+  if (req.method === "GET" && url.pathname === "/api/notifications") {
+    const userId = url.searchParams.get("userId");
+    if (!userId) {
+      return sendJson(res, 400, { error: "userId required" });
+    }
+
+    try {
+      // Get recent service bookings as notifications
+      const [bookings] = await db.execute(
+        `SELECT b.booking_id as id, CONCAT('Service ', b.status) as title,
+                CONCAT('Your ', b.service_type, ' is ', b.status) as message,
+                'info' as type, b.created_at as timestamp, 0 as read
+         FROM service_bookings b
+         WHERE b.owner_id = (SELECT owner_id FROM vehicle_owners WHERE user_id = ?)
+         ORDER BY b.created_at DESC LIMIT 10`,
+        [Number(userId)],
+      );
+
+      // Get recent invoices as notifications
+      const [invoices] = await db.execute(
+        `SELECT i.invoice_id as id, CONCAT('Invoice ', i.status) as title,
+                CONCAT('Invoice #', i.invoice_id, ' is ', i.status) as message,
+                'success' as type, i.created_at as timestamp, 0 as read
+         FROM invoices i
+         WHERE i.owner_id = (SELECT owner_id FROM vehicle_owners WHERE user_id = ?)
+         ORDER BY i.created_at DESC LIMIT 10`,
+        [Number(userId)],
+      );
+
+      const allNotifications = [
+        ...(bookings as any[]),
+        ...(invoices as any[]),
+      ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+      return sendJson(res, 200, { notifications: allNotifications.slice(0, 10) });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/report-requests
+  if (req.method === "POST" && url.pathname === "/api/report-requests") {
+    const body = await readBody(req);
+    const { workshopId, type, description, priority } = body;
+
+    if (!workshopId || !type || !description) {
+      return sendJson(res, 400, {
+        error: "workshopId, type, description required",
+      });
+    }
+
+    try {
+      const [result] = await db.execute(
+        `INSERT INTO service_bookings (owner_id, workshop_id, customer_name, 
+         service_type, preferred_date, preferred_time, description, status)
+         VALUES (1, ?, ?, ?, CURDATE(), CURTIME(), ?, 'pending')`,
+        [Number(workshopId), `Report: ${type}`, type, description],
+      );
+
+      return sendJson(res, 201, { id: (result as any).insertId });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // GET /api/report-requests?status=pending
+  if (req.method === "GET" && url.pathname === "/api/report-requests") {
+    const status = url.searchParams.get("status");
+
+    try {
+      let query = `SELECT booking_id as id, service_type as type, 
+                          description, preferred_date as requestedDate, 
+                          status, 'high' as priority, customer_name as workshopName
+                   FROM service_bookings
+                   WHERE customer_name LIKE 'Report:%'`;
+      const params: any[] = [];
+
+      if (status) {
+        query += " AND status = ?";
+        params.push(status);
+      }
+
+      query += " ORDER BY preferred_date DESC";
+
+      const [requests] = await db.execute(query, params);
+      return sendJson(res, 200, { requests });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // PUT /api/report-requests/:id
+  if (req.method === "PUT" && url.pathname.startsWith("/api/report-requests/")) {
+    const id = url.pathname.split("/")[3];
+    const body = await readBody(req);
+    const { status, adminNotes } = body;
+
+    if (!id || !status) {
+      return sendJson(res, 400, { error: "id and status required" });
+    }
+
+    try {
+      await db.execute(
+        "UPDATE service_bookings SET status = ?, description = CONCAT(description, ?) WHERE booking_id = ?",
+        [status, adminNotes ? `\n\nAdmin Notes: ${adminNotes}` : "", Number(id)],
+      );
+
+      return sendJson(res, 200, { ok: true });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
   return sendJson(res, 404, { error: "Not found" });
 });
 

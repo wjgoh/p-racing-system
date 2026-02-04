@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card } from "../ui/card";
 import { Badge } from "../ui/badge";
 import {
@@ -26,112 +26,65 @@ import {
   SelectValue,
 } from "../ui/select";
 import { Clock, Wrench, Eye, CheckCircle, AlertCircle } from "lucide-react";
+import { apiGetServiceHistory } from "../api/owner";
+import { getStoredUser } from "../api/session";
 
 interface ServiceRecord {
-  id: string;
-  vehicleId: string;
-  vehicleName: string;
-  serviceType:
-    | "maintenance"
-    | "repair"
-    | "inspection"
-    | "oil-change"
-    | "tire-service"
-    | "other";
+  record_id?: string;
+  id?: string;
+  vehicleId?: string;
+  vehicle_id?: string;
+  vehicleName?: string;
+  make?: string;
+  model?: string;
+  year?: string;
+  plate_number?: string;
+  serviceType?: string;
+  service_type?: string;
   description: string;
-  serviceDate: string;
+  serviceDate?: string;
+  performed_at?: string;
   completionDate?: string;
-  mileage: number;
+  mileage?: number;
   cost: number;
-  status: "completed" | "pending" | "in-progress" | "cancelled";
-  workshopName: string;
+  status?: "completed" | "pending" | "in-progress" | "cancelled";
+  workshopName?: string;
+  workshop_name?: string;
   notes?: string;
   partReplaced?: string[];
 }
 
 export function ServiceHistory() {
-  const [serviceRecords] = useState<ServiceRecord[]>([
-    {
-      id: "SH001",
-      vehicleId: "VH001",
-      vehicleName: "2020 Toyota Camry",
-      serviceType: "oil-change",
-      description: "Regular Oil Change - 5000 Mile Service",
-      serviceDate: "2026-02-01",
-      completionDate: "2026-02-01",
-      mileage: 45200,
-      cost: 89.99,
-      status: "completed",
-      workshopName: "Downtown Workshop",
-      notes: "Used Synthetic Oil 5W-30",
-      partReplaced: ["Oil Filter"],
-    },
-    {
-      id: "SH002",
-      vehicleId: "VH001",
-      vehicleName: "2020 Toyota Camry",
-      serviceType: "maintenance",
-      description: "Tire Rotation and Balance",
-      serviceDate: "2026-01-15",
-      completionDate: "2026-01-15",
-      mileage: 44800,
-      cost: 75.0,
-      status: "completed",
-      workshopName: "Central Mechanics",
-      partReplaced: [],
-    },
-    {
-      id: "SH003",
-      vehicleId: "VH001",
-      vehicleName: "2020 Toyota Camry",
-      serviceType: "repair",
-      description: "Brake Pad Replacement",
-      serviceDate: "2025-12-20",
-      completionDate: "2025-12-20",
-      mileage: 44200,
-      cost: 320.0,
-      status: "completed",
-      workshopName: "Downtown Workshop",
-      notes: "Front brake pads replaced with premium ceramic pads",
-      partReplaced: ["Front Brake Pads", "Brake Fluid"],
-    },
-    {
-      id: "SH004",
-      vehicleId: "VH001",
-      vehicleName: "2020 Toyota Camry",
-      serviceType: "inspection",
-      description: "Annual Inspection",
-      serviceDate: "2025-11-10",
-      completionDate: "2025-11-10",
-      mileage: 43500,
-      cost: 150.0,
-      status: "completed",
-      workshopName: "Central Mechanics",
-      notes: "All systems passed inspection",
-    },
-    {
-      id: "SH005",
-      vehicleId: "VH002",
-      vehicleName: "2022 Honda CR-V",
-      serviceType: "maintenance",
-      description: "Battery Check and Replacement",
-      serviceDate: "2026-02-03",
-      mileage: 28900,
-      cost: 180.0,
-      status: "in-progress",
-      workshopName: "Downtown Workshop",
-      notes: "Battery at 80% capacity, replaced with new",
-    },
-  ]);
-
-  const [selectedRecord, setSelectedRecord] = useState<ServiceRecord | null>(
-    null,
-  );
+  const [serviceRecords, setServiceRecords] = useState<ServiceRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedRecord, setSelectedRecord] = useState<ServiceRecord | null>(null);
   const [vehicleFilter, setVehicleFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
 
+  useEffect(() => {
+    const loadServiceHistory = async () => {
+      try {
+        const user = getStoredUser();
+        if (!user || !user.owner_id) {
+          setError("Please log in to view service history");
+          return;
+        }
+
+        const records = await apiGetServiceHistory(user.owner_id);
+        setServiceRecords(records);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load service history");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadServiceHistory();
+  }, []);
+
   const uniqueVehicles = Array.from(
-    new Set(serviceRecords.map((r) => r.vehicleName)),
+    new Set(serviceRecords.map((r) => r.vehicleName || r.make)),
   );
 
   const filteredRecords = serviceRecords.filter((record) => {
@@ -219,6 +172,10 @@ export function ServiceHistory() {
           Track all maintenance and service records for your vehicles
         </p>
       </div>
+
+      {/* Loading/Error States */}
+      {loading && <p className="text-muted-foreground">Loading service history...</p>}
+      {error && <p className="text-sm text-red-500">{error}</p>}
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
