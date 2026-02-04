@@ -13,6 +13,100 @@ const db = mysql.createPool({
   database: process.env.DB_NAME,
 });
 
+const userSchema = {
+  hasStatus: false,
+  hasCreatedAt: false,
+};
+
+async function ensureUserSchema() {
+  const dbName = process.env.DB_NAME;
+  if (!dbName) return;
+
+  try {
+    const [rows] = await db.execute(
+      `SELECT COLUMN_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'users'`,
+      [dbName]
+    );
+    const existing = new Set(
+      (rows as any[]).map((row) => String(row.COLUMN_NAME))
+    );
+
+    if (existing.has("status")) {
+      userSchema.hasStatus = true;
+    } else {
+      await db.execute(
+        "ALTER TABLE users ADD COLUMN status ENUM('active','inactive') NOT NULL DEFAULT 'active'"
+      );
+      userSchema.hasStatus = true;
+    }
+
+    if (existing.has("created_at")) {
+      userSchema.hasCreatedAt = true;
+    } else {
+      await db.execute(
+        "ALTER TABLE users ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+      );
+      userSchema.hasCreatedAt = true;
+    }
+  } catch (err) {
+    console.error("User schema check failed:", err);
+  }
+}
+
+void ensureUserSchema();
+
+async function ensureReportSchema() {
+  try {
+    await db.execute(
+      `CREATE TABLE IF NOT EXISTS report_requests (
+        request_id INT(11) NOT NULL AUTO_INCREMENT,
+        workshop_id INT(11) NOT NULL,
+        month INT(11) NOT NULL,
+        year INT(11) NOT NULL,
+        status ENUM('pending','generated','rejected') NOT NULL DEFAULT 'pending',
+        invoice_count INT(11) NOT NULL DEFAULT 0,
+        total_revenue DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+        paid_revenue DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        generated_at DATETIME DEFAULT NULL,
+        PRIMARY KEY (request_id),
+        KEY report_requests_workshop_id (workshop_id),
+        CONSTRAINT report_requests_ibfk_1
+          FOREIGN KEY (workshop_id) REFERENCES workshops (workshop_id)
+          ON DELETE CASCADE ON UPDATE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;`
+    );
+  } catch (err) {
+    console.error("Report schema check failed:", err);
+  }
+}
+
+void ensureReportSchema();
+
+function buildUserSelectColumns() {
+  const columns = [
+    "u.user_id",
+    "u.name",
+    "u.email",
+    "u.role",
+    "u.workshop_id",
+  ];
+  columns.push(userSchema.hasStatus ? "u.status" : "'active' AS status");
+  columns.push(
+    userSchema.hasCreatedAt ? "u.created_at" : "NULL AS created_at"
+  );
+  return columns;
+}
+
+async function fetchUserRecord(userId: number) {
+  const columns = buildUserSelectColumns();
+  const [rows] = await db.execute(
+    `SELECT ${columns.join(", ")} FROM users u WHERE u.user_id = ? LIMIT 1`,
+    [Number(userId)]
+  );
+  return (rows as any[])[0] ?? null;
 const SERVICE_INTERVAL_MONTHS = 6;
 const SERVICE_INTERVAL_MILES = 5000;
 
@@ -255,8 +349,9 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     }
 
     // IMPORTANT: adjust column names if your table differs
+    const statusColumn = userSchema.hasStatus ? ", u.status" : "";
     const [rows] = await db.execute(
-      `SELECT u.user_id, u.name, u.email, u.password_hash, u.role, u.workshop_id,
+      `SELECT u.user_id, u.name, u.email, u.password_hash, u.role, u.workshop_id${statusColumn},
               vo.owner_id
        FROM users u
        LEFT JOIN vehicle_owners vo ON vo.user_id = u.user_id
@@ -266,6 +361,10 @@ if (req.method === "POST" && url.pathname === "/api/register") {
 
     const user = (rows as any[])[0];
     if (!user) return sendJson(res, 401, { error: "Invalid credentials" });
+
+    if (userSchema.hasStatus && String(user.status) === "inactive") {
+      return sendJson(res, 403, { error: "Account is inactive" });
+    }
 
     // ASSIGNMENT MODE: plain password compare
     const verify = await bcrypt.compare(password, user.password_hash);
@@ -282,6 +381,507 @@ if (req.method === "POST" && url.pathname === "/api/register") {
         workshop_id: user.workshop_id ?? null,
       },
     });
+  }
+
+  // GET /api/admin/users
+  if (req.method === "GET" && url.pathname === "/api/admin/users") {
+    try {
+      const columns = buildUserSelectColumns();
+      const orderBy = userSchema.hasCreatedAt
+        ? "u.created_at DESC, u.user_id DESC"
+        : "u.user_id DESC";
+      const [rows] = await db.execute(
+        `SELECT ${columns.join(", ")} FROM users u ORDER BY ${orderBy}`
+      );
+      return sendJson(res, 200, { users: rows });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/admin/users
+  if (req.method === "POST" && url.pathname === "/api/admin/users") {
+    const body = await readBody(req);
+    const { name, email, password, role, status, workshopId } = body;
+
+    if (!name || !email || !password || !role) {
+      return sendJson(res, 400, {
+        error: "name, email, password, role required",
+      });
+    }
+
+    const normalizedRole = String(role).toUpperCase();
+    const allowedRoles = new Set(["ADMIN", "WORKSHOP", "MECHANIC", "OWNER"]);
+    if (!allowedRoles.has(normalizedRole)) {
+      return sendJson(res, 400, { error: "invalid role" });
+    }
+
+    const passwordHash = await bcrypt.hash(String(password), 10);
+
+    try {
+      let workshopIdForUser: number | null = null;
+
+      if (normalizedRole === "WORKSHOP") {
+        const workshopName = String(body.workshopName ?? name ?? "").trim();
+        if (!workshopName) {
+          return sendJson(res, 400, { error: "workshop name required" });
+        }
+
+        const [workshopResult] = await db.execute(
+          `INSERT INTO workshops (name, email, phone, address)
+           VALUES (?, ?, ?, ?)`,
+          [workshopName, email ?? null, null, null]
+        );
+
+        workshopIdForUser = (workshopResult as any).insertId as number;
+      } else if (normalizedRole === "MECHANIC" && workshopId) {
+        const parsedWorkshopId = Number(workshopId);
+        if (!Number.isNaN(parsedWorkshopId)) {
+          workshopIdForUser = parsedWorkshopId;
+        }
+      }
+
+      const columns = ["name", "email", "password_hash", "role", "workshop_id"];
+      const values: Array<string | number | null> = [
+        String(name),
+        String(email),
+        passwordHash,
+        normalizedRole,
+        workshopIdForUser,
+      ];
+
+      if (userSchema.hasStatus) {
+        columns.push("status");
+        values.push(status === "inactive" ? "inactive" : "active");
+      }
+
+      const placeholders = columns.map(() => "?").join(", ");
+      const [result] = await db.execute(
+        `INSERT INTO users (${columns.join(", ")}) VALUES (${placeholders})`,
+        values
+      );
+
+      const userId = (result as any).insertId as number;
+      let ownerId: number | null = null;
+
+      if (normalizedRole === "OWNER") {
+        const [ownerResult] = await db.execute(
+          `INSERT INTO vehicle_owners (user_id, phone) VALUES (?, ?)`,
+          [userId, null]
+        );
+        ownerId = (ownerResult as any).insertId as number;
+      }
+
+      const userRecord = await fetchUserRecord(userId);
+      return sendJson(res, 201, {
+        user: userRecord,
+        owner_id: ownerId,
+        workshop_id: workshopIdForUser,
+      });
+    } catch (err: any) {
+      if (String(err?.code) === "ER_DUP_ENTRY") {
+        return sendJson(res, 409, { error: "Email already exists" });
+      }
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/admin/users/update
+  if (req.method === "POST" && url.pathname === "/api/admin/users/update") {
+    const body = await readBody(req);
+    const { userId, name, email, role, status, password, workshopId } = body;
+
+    if (!userId) {
+      return sendJson(res, 400, { error: "userId required" });
+    }
+
+    const updates: string[] = [];
+    const params: Array<string | number | null> = [];
+    let normalizedRole: string | null = null;
+
+    if (name !== undefined) {
+      updates.push("name = ?");
+      params.push(name ? String(name) : null);
+    }
+
+    if (email !== undefined) {
+      updates.push("email = ?");
+      params.push(email ? String(email) : null);
+    }
+
+    if (role !== undefined) {
+      normalizedRole = String(role).toUpperCase();
+      const allowedRoles = new Set(["ADMIN", "WORKSHOP", "MECHANIC", "OWNER"]);
+      if (!allowedRoles.has(normalizedRole)) {
+        return sendJson(res, 400, { error: "invalid role" });
+      }
+      updates.push("role = ?");
+      params.push(normalizedRole);
+    }
+
+    if (workshopId !== undefined) {
+      const parsedWorkshopId = workshopId ? Number(workshopId) : null;
+      updates.push("workshop_id = ?");
+      params.push(
+        parsedWorkshopId && !Number.isNaN(parsedWorkshopId)
+          ? parsedWorkshopId
+          : null
+      );
+    }
+
+    if (userSchema.hasStatus && status !== undefined) {
+      updates.push("status = ?");
+      params.push(status === "inactive" ? "inactive" : "active");
+    }
+
+    if (password) {
+      const passwordHash = await bcrypt.hash(String(password), 10);
+      updates.push("password_hash = ?");
+      params.push(passwordHash);
+    }
+
+    if (updates.length === 0) {
+      return sendJson(res, 400, { error: "No fields to update" });
+    }
+
+    try {
+      params.push(Number(userId));
+      await db.execute(
+        `UPDATE users SET ${updates.join(", ")} WHERE user_id = ?`,
+        params
+      );
+
+      const userRecord = await fetchUserRecord(Number(userId));
+      if (!userRecord) {
+        return sendJson(res, 404, { error: "User not found" });
+      }
+
+      if (String(userRecord.role) === "OWNER") {
+        const [ownerRows] = await db.execute(
+          "SELECT owner_id FROM vehicle_owners WHERE user_id = ? LIMIT 1",
+          [Number(userId)]
+        );
+        if ((ownerRows as any[]).length === 0) {
+          await db.execute(
+            "INSERT INTO vehicle_owners (user_id, phone) VALUES (?, ?)",
+            [Number(userId), null]
+          );
+        }
+      }
+
+      if (String(userRecord.role) === "WORKSHOP" && !userRecord.workshop_id) {
+        const workshopName = String(userRecord.name ?? "").trim();
+        if (workshopName) {
+          const [workshopResult] = await db.execute(
+            `INSERT INTO workshops (name, email, phone, address)
+             VALUES (?, ?, ?, ?)`,
+            [workshopName, userRecord.email ?? null, null, null]
+          );
+          const newWorkshopId = (workshopResult as any).insertId as number;
+          await db.execute(
+            "UPDATE users SET workshop_id = ? WHERE user_id = ?",
+            [newWorkshopId, Number(userId)]
+          );
+          const refreshed = await fetchUserRecord(Number(userId));
+          return sendJson(res, 200, { user: refreshed });
+        }
+      }
+
+      return sendJson(res, 200, { user: userRecord });
+    } catch (err: any) {
+      if (String(err?.code) === "ER_DUP_ENTRY") {
+        return sendJson(res, 409, { error: "Email already exists" });
+      }
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/admin/users/delete
+  if (req.method === "POST" && url.pathname === "/api/admin/users/delete") {
+    const body = await readBody(req);
+    const { userId } = body;
+
+    if (!userId) {
+      return sendJson(res, 400, { error: "userId required" });
+    }
+
+    try {
+      if (userSchema.hasStatus) {
+        await db.execute("UPDATE users SET status = 'inactive' WHERE user_id = ?", [
+          Number(userId),
+        ]);
+        return sendJson(res, 200, { ok: true, status: "inactive" });
+      }
+
+      await db.execute("DELETE FROM users WHERE user_id = ?", [Number(userId)]);
+      return sendJson(res, 200, { ok: true });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/reports/request
+  if (req.method === "POST" && url.pathname === "/api/reports/request") {
+    const body = await readBody(req);
+    const { workshopId, month, year } = body;
+
+    const parsedWorkshopId = Number(workshopId);
+    const parsedMonth = Number(month);
+    const parsedYear = Number(year);
+
+    if (
+      Number.isNaN(parsedWorkshopId) ||
+      Number.isNaN(parsedMonth) ||
+      Number.isNaN(parsedYear)
+    ) {
+      return sendJson(res, 400, { error: "workshopId, month, year required" });
+    }
+
+    if (parsedMonth < 1 || parsedMonth > 12) {
+      return sendJson(res, 400, { error: "month must be 1-12" });
+    }
+
+    try {
+      const [existingRows] = await db.execute(
+        `SELECT r.*, w.name AS workshop_name
+         FROM report_requests r
+         LEFT JOIN workshops w ON w.workshop_id = r.workshop_id
+         WHERE r.workshop_id = ? AND r.month = ? AND r.year = ?
+         ORDER BY r.created_at DESC
+         LIMIT 1`,
+        [parsedWorkshopId, parsedMonth, parsedYear]
+      );
+
+      const existing = (existingRows as any[])[0];
+      if (existing) {
+        return sendJson(res, 200, { request: existing, existed: true });
+      }
+
+      const [result] = await db.execute(
+        `INSERT INTO report_requests (workshop_id, month, year, status)
+         VALUES (?, ?, ?, 'pending')`,
+        [parsedWorkshopId, parsedMonth, parsedYear]
+      );
+
+      const requestId = (result as any).insertId as number;
+      const [rows] = await db.execute(
+        `SELECT r.*, w.name AS workshop_name
+         FROM report_requests r
+         LEFT JOIN workshops w ON w.workshop_id = r.workshop_id
+         WHERE r.request_id = ? LIMIT 1`,
+        [Number(requestId)]
+      );
+
+      return sendJson(res, 201, { request: (rows as any[])[0] });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // GET /api/reports/requests?workshopId=5
+  if (req.method === "GET" && url.pathname === "/api/reports/requests") {
+    const workshopId = url.searchParams.get("workshopId");
+    if (!workshopId) {
+      return sendJson(res, 400, { error: "workshopId required" });
+    }
+
+    try {
+      const [rows] = await db.execute(
+        `SELECT r.*, w.name AS workshop_name
+         FROM report_requests r
+         LEFT JOIN workshops w ON w.workshop_id = r.workshop_id
+         WHERE r.workshop_id = ?
+         ORDER BY r.created_at DESC`,
+        [Number(workshopId)]
+      );
+      return sendJson(res, 200, { requests: rows });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // GET /api/admin/report-requests
+  if (req.method === "GET" && url.pathname === "/api/admin/report-requests") {
+    const status = url.searchParams.get("status");
+    const allowedStatuses = new Set(["pending", "generated", "rejected"]);
+    const conditions: string[] = [];
+    const params: Array<string | number> = [];
+
+    if (status) {
+      if (!allowedStatuses.has(String(status))) {
+        return sendJson(res, 400, { error: "invalid status" });
+      }
+      conditions.push("r.status = ?");
+      params.push(String(status));
+    }
+
+    const whereClause = conditions.length
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
+
+    try {
+      const [rows] = await db.execute(
+        `SELECT r.*, w.name AS workshop_name
+         FROM report_requests r
+         LEFT JOIN workshops w ON w.workshop_id = r.workshop_id
+         ${whereClause}
+         ORDER BY r.created_at DESC`,
+        params
+      );
+      return sendJson(res, 200, { requests: rows });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/admin/report-requests/generate
+  if (
+    req.method === "POST" &&
+    url.pathname === "/api/admin/report-requests/generate"
+  ) {
+    const body = await readBody(req);
+    const { requestId } = body;
+
+    if (!requestId) {
+      return sendJson(res, 400, { error: "requestId required" });
+    }
+
+    try {
+      const [requestRows] = await db.execute(
+        `SELECT request_id, workshop_id, month, year
+         FROM report_requests
+         WHERE request_id = ? LIMIT 1`,
+        [Number(requestId)]
+      );
+      const request = (requestRows as any[])[0];
+      if (!request) {
+        return sendJson(res, 404, { error: "Request not found" });
+      }
+
+      const [summaryRows] = await db.execute(
+        `SELECT
+           COUNT(*) AS invoice_count,
+           COALESCE(SUM(CASE WHEN status IN ('approved','paid') THEN total_amount ELSE 0 END), 0) AS total_revenue,
+           COALESCE(SUM(CASE WHEN status = 'paid' THEN total_amount ELSE 0 END), 0) AS paid_revenue
+         FROM invoices
+         WHERE workshop_id = ?
+           AND YEAR(created_at) = ?
+           AND MONTH(created_at) = ?`,
+        [Number(request.workshop_id), Number(request.year), Number(request.month)]
+      );
+
+      const summary = (summaryRows as any[])[0] ?? {};
+      const invoiceCount = Number(summary.invoice_count ?? 0);
+      const totalRevenue = Number(summary.total_revenue ?? 0);
+      const paidRevenue = Number(summary.paid_revenue ?? 0);
+
+      await db.execute(
+        `UPDATE report_requests
+         SET status = 'generated',
+             invoice_count = ?,
+             total_revenue = ?,
+             paid_revenue = ?,
+             generated_at = NOW()
+         WHERE request_id = ?`,
+        [invoiceCount, totalRevenue, paidRevenue, Number(requestId)]
+      );
+
+      const [rows] = await db.execute(
+        `SELECT r.*, w.name AS workshop_name
+         FROM report_requests r
+         LEFT JOIN workshops w ON w.workshop_id = r.workshop_id
+         WHERE r.request_id = ? LIMIT 1`,
+        [Number(requestId)]
+      );
+
+      return sendJson(res, 200, { request: (rows as any[])[0] });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // GET /api/admin/reports/yearly?workshopId=5&year=2026
+  if (req.method === "GET" && url.pathname === "/api/admin/reports/yearly") {
+    const workshopId = url.searchParams.get("workshopId");
+    const year = url.searchParams.get("year");
+
+    if (!workshopId || !year) {
+      return sendJson(res, 400, { error: "workshopId and year required" });
+    }
+
+    const parsedWorkshopId = Number(workshopId);
+    const parsedYear = Number(year);
+    if (Number.isNaN(parsedWorkshopId) || Number.isNaN(parsedYear)) {
+      return sendJson(res, 400, { error: "Invalid workshopId or year" });
+    }
+
+    try {
+      const [workshopRows] = await db.execute(
+        "SELECT name FROM workshops WHERE workshop_id = ? LIMIT 1",
+        [parsedWorkshopId]
+      );
+      const workshopName = (workshopRows as any[])[0]?.name ?? null;
+
+      const [rows] = await db.execute(
+        `SELECT
+           MONTH(created_at) AS month,
+           COUNT(*) AS invoice_count,
+           COALESCE(SUM(CASE WHEN status IN ('approved','paid') THEN total_amount ELSE 0 END), 0) AS total_revenue,
+           COALESCE(SUM(CASE WHEN status = 'paid' THEN total_amount ELSE 0 END), 0) AS paid_revenue
+         FROM invoices
+         WHERE workshop_id = ?
+           AND YEAR(created_at) = ?
+         GROUP BY MONTH(created_at)
+         ORDER BY MONTH(created_at)`,
+        [parsedWorkshopId, parsedYear]
+      );
+
+      const byMonth = new Map<number, any>();
+      for (const row of rows as any[]) {
+        byMonth.set(Number(row.month), {
+          month: Number(row.month),
+          invoice_count: Number(row.invoice_count ?? 0),
+          total_revenue: Number(row.total_revenue ?? 0),
+          paid_revenue: Number(row.paid_revenue ?? 0),
+        });
+      }
+
+      const months: Array<{
+        month: number;
+        invoice_count: number;
+        total_revenue: number;
+        paid_revenue: number;
+      }> = [];
+
+      for (let m = 1; m <= 12; m += 1) {
+        months.push(
+          byMonth.get(m) ?? {
+            month: m,
+            invoice_count: 0,
+            total_revenue: 0,
+            paid_revenue: 0,
+          }
+        );
+      }
+
+      return sendJson(res, 200, {
+        workshop_id: parsedWorkshopId,
+        workshop_name: workshopName,
+        year: parsedYear,
+        months,
+      });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
   }
 
   // GET /api/vehicles?ownerId=123 (ownerId = vehicle_owners.owner_id)
