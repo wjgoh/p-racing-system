@@ -38,6 +38,8 @@ import {
   apiUpdateJobNotes,
   apiUpdateMechanicJobStatus,
 } from "../api/mechanic";
+import { apiUpdateVehicleService } from "../api/bookings";
+import { addMonths, format } from "date-fns";
 
 interface JobDetailsProps {
   job: Job;
@@ -55,6 +57,10 @@ export function JobDetails({ job, onUpdateJob, onBack }: JobDetailsProps) {
   const [partSaving, setPartSaving] = useState(false);
   const [repairSaving, setRepairSaving] = useState(false);
   const [removingPartId, setRemovingPartId] = useState<string | null>(null);
+  const [serviceDate, setServiceDate] = useState("");
+  const [serviceMileage, setServiceMileage] = useState("");
+  const [serviceSaving, setServiceSaving] = useState(false);
+  const [serviceMessage, setServiceMessage] = useState<string | null>(null);
   const [newPart, setNewPart] = useState({
     name: "",
     quantity: 1,
@@ -64,6 +70,14 @@ export function JobDetails({ job, onUpdateJob, onBack }: JobDetailsProps) {
 
   useEffect(() => {
     setCurrentJob(job);
+    const parsed = job.scheduledDate ? new Date(job.scheduledDate) : null;
+    if (parsed && !Number.isNaN(parsed.getTime())) {
+      setServiceDate(format(parsed, "yyyy-MM-dd"));
+    } else {
+      setServiceDate(format(new Date(), "yyyy-MM-dd"));
+    }
+    setServiceMileage("");
+    setServiceMessage(null);
   }, [job]);
 
   const handleStatusChange = async (status: Job["status"]) => {
@@ -217,6 +231,46 @@ export function JobDetails({ job, onUpdateJob, onBack }: JobDetailsProps) {
         return "default";
       case "low":
         return "secondary";
+    }
+  };
+
+  const SERVICE_INTERVAL_MONTHS = 6;
+  const SERVICE_INTERVAL_MILES = 5000;
+
+  const nextServiceDate =
+    serviceDate && !Number.isNaN(new Date(serviceDate).getTime())
+      ? format(addMonths(new Date(serviceDate), SERVICE_INTERVAL_MONTHS), "MMM dd, yyyy")
+      : "-";
+
+  const nextServiceMileage =
+    serviceMileage && !Number.isNaN(Number(serviceMileage))
+      ? (Number(serviceMileage) + SERVICE_INTERVAL_MILES).toLocaleString()
+      : "-";
+
+  const handleServiceUpdate = async () => {
+    if (serviceSaving) return;
+    if (!currentJob.vehicleId) {
+      setServiceMessage("No vehicle linked to this job.");
+      return;
+    }
+    if (!serviceDate && !serviceMileage) {
+      setServiceMessage("Provide service date or mileage.");
+      return;
+    }
+
+    setServiceSaving(true);
+    setServiceMessage(null);
+    try {
+      await apiUpdateVehicleService({
+        vehicleId: currentJob.vehicleId,
+        lastServiceDate: serviceDate || null,
+        lastServiceMileage: serviceMileage ? Number(serviceMileage) : null,
+      });
+      setServiceMessage("Service record updated. Share next service info with the owner.");
+    } catch (err: any) {
+      setServiceMessage(err?.message ?? "Failed to update service record");
+    } finally {
+      setServiceSaving(false);
     }
   };
 
@@ -404,6 +458,65 @@ export function JobDetails({ job, onUpdateJob, onBack }: JobDetailsProps) {
             ))}
           </div>
         )}
+      </Card>
+
+      {/* Service Record */}
+      <Card className="p-4 md:p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold">Service Record</h3>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="service-date">Last Service Date</Label>
+            <Input
+              id="service-date"
+              type="date"
+              value={serviceDate}
+              onChange={(e) => setServiceDate(e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="service-mileage">Last Service Mileage</Label>
+            <Input
+              id="service-mileage"
+              type="number"
+              min="0"
+              placeholder="e.g., 45000"
+              value={serviceMileage}
+              onChange={(e) => setServiceMileage(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 text-sm text-slate-600">
+          <div>
+            <p className="text-xs text-slate-400 uppercase tracking-wide">
+              Next Service Date (Auto)
+            </p>
+            <p className="font-medium text-slate-700">{nextServiceDate}</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-400 uppercase tracking-wide">
+              Next Service Mileage (Auto)
+            </p>
+            <p className="font-medium text-slate-700">{nextServiceMileage}</p>
+          </div>
+        </div>
+
+        {serviceMessage && (
+          <p className="text-sm text-slate-600 mt-3">{serviceMessage}</p>
+        )}
+
+        <div className="flex justify-end mt-4">
+          <Button
+            onClick={handleServiceUpdate}
+            disabled={serviceSaving || (!serviceDate && !serviceMileage)}
+            className="gap-2"
+          >
+            {serviceSaving ? "Updating..." : "Update Service Record"}
+          </Button>
+        </div>
       </Card>
 
       {/* Notes */}

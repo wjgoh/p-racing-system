@@ -4,12 +4,13 @@ import { WorkshopHeader } from "./workshop/WorkshopHeader";
 import { JobAssignment } from "./workshop/JobAssignment";
 import { ReservationQueue } from "./workshop/ReservationQueue";
 import { InvoiceManagement } from "./workshop/InvoiceManagement";
+import { WorkshopReviews } from "./workshop/WorkshopReviews";
 
 interface WorkshopDashboardProps {
   onLogout: () => void;
 }
 
-type WorkshopView = "assignments" | "queue" | "invoices";
+type WorkshopView = "assignments" | "queue" | "invoices" | "reviews";
 
 export function WorkshopDashboard({ onLogout }: WorkshopDashboardProps) {
   const [currentView, setCurrentView] = useState<WorkshopView>("assignments");
@@ -23,6 +24,8 @@ export function WorkshopDashboard({ onLogout }: WorkshopDashboardProps) {
         return <ReservationQueue />;
       case "invoices":
         return <InvoiceManagement />;
+      case "reviews":
+        return <WorkshopReviews />;
       default:
         return <JobAssignment />;
     }

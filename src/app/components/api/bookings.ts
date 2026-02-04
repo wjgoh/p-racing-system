@@ -6,11 +6,26 @@ export type Vehicle = {
   model: string | null;
   year: string | null;
   color: string | null;
+  last_service_date?: string | null;
+  next_service_date?: string | null;
+  last_service_mileage?: number | null;
+  next_service_mileage?: number | null;
 };
 
 export type Workshop = {
   workshop_id: number;
   name: string;
+};
+
+export type VehicleServiceRecord = {
+  job_id: number;
+  service_type: string | null;
+  description: string | null;
+  completed_at: string | null;
+  scheduled_date: string | null;
+  mechanic_name: string | null;
+  performed_at: string | null;
+  total_cost: number | null;
 };
 
 export type Booking = {
@@ -50,6 +65,10 @@ export async function apiCreateVehicle(payload: {
   model?: string | null;
   year?: string | null;
   color?: string | null;
+  lastServiceDate?: string | null;
+  nextServiceDate?: string | null;
+  lastServiceMileage?: number | null;
+  nextServiceMileage?: number | null;
 }) {
   const res = await fetch(`${API_BASE}/api/vehicles`, {
     method: "POST",
@@ -59,6 +78,36 @@ export async function apiCreateVehicle(payload: {
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error ?? "Failed to create vehicle");
   return data;
+}
+
+export async function apiUpdateVehicleService(payload: {
+  vehicleId: number;
+  ownerId?: number;
+  lastServiceDate?: string | null;
+  lastServiceMileage?: number | null;
+}) {
+  const res = await fetch(`${API_BASE}/api/vehicles/service`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error ?? "Failed to update vehicle service");
+  return data;
+}
+
+export async function apiListVehicleHistory(params: {
+  vehicleId: number;
+  ownerId?: number;
+}): Promise<VehicleServiceRecord[]> {
+  const search = new URLSearchParams();
+  search.set("vehicleId", String(params.vehicleId));
+  if (params.ownerId) search.set("ownerId", String(params.ownerId));
+
+  const res = await fetch(`${API_BASE}/api/vehicles/history?${search.toString()}`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error ?? "Failed to load service history");
+  return (data?.history ?? []) as VehicleServiceRecord[];
 }
 
 export async function apiListWorkshops(): Promise<Workshop[]> {

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card } from "../ui/card";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
@@ -13,13 +13,22 @@ import {
 } from "../ui/dialog";
 import { Star, MessageSquare, CheckCircle, Calendar } from "lucide-react";
 import { format } from "date-fns";
+import {
+  apiListPendingRatings,
+  apiListRatings,
+  apiSubmitRating,
+  type PendingRatingRecord,
+  type ServiceRatingRecord,
+} from "../api/feedback";
+import { getStoredUser } from "../api/session";
 
 interface Feedback {
   id: string;
+  bookingId: number;
   serviceId: string;
   vehicle: string;
   serviceType: string;
-  serviceDate: Date;
+  serviceDate: Date | null;
   rating: number;
   comment: string;
   submittedAt: Date;
@@ -27,54 +36,45 @@ interface Feedback {
 }
 
 interface PendingService {
-  id: string;
+  bookingId: number;
+  serviceId: string;
   vehicle: string;
   serviceType: string;
-  completedDate: Date;
-  hasReview: boolean;
+  completedDate: Date | null;
 }
 
-const mockFeedbacks: Feedback[] = [
-  {
-    id: "FB001",
-    serviceId: "SVC-2026-001",
-    vehicle: "2020 Toyota Camry (ABC-1234)",
-    serviceType: "Oil Change & Tire Rotation",
-    serviceDate: new Date("2026-01-15"),
-    rating: 5,
-    comment:
-      "Excellent service! The team was professional and completed the work quickly. Very satisfied with the quality.",
-    submittedAt: new Date("2026-01-16"),
-    response:
-      "Thank you for your positive feedback! We're thrilled to hear you had a great experience.",
-  },
-  {
-    id: "FB002",
-    serviceId: "SVC-2025-287",
-    vehicle: "2019 Honda Civic (XYZ-5678)",
-    serviceType: "Brake Service",
-    serviceDate: new Date("2025-12-10"),
-    rating: 4,
-    comment:
-      "Good service overall. The brakes feel much better now. Wait time was a bit longer than expected, but the work quality was great.",
-    submittedAt: new Date("2025-12-13"),
-  },
-];
+const parseDate = (value?: string | null) =>
+  value ? new Date(value) : null;
 
-const mockPendingServices: PendingService[] = [
-  {
-    id: "SVC-2026-045",
-    vehicle: "2020 Toyota Camry (ABC-1234)",
-    serviceType: "Annual Inspection",
-    completedDate: new Date("2026-01-20"),
-    hasReview: false,
-  },
-];
+const formatServiceId = (bookingId: number, date?: Date | null) => {
+  const year = (date ?? new Date()).getFullYear();
+  return `SVC-${year}-${String(bookingId).padStart(3, "0")}`;
+};
+
+const formatVehicleLabel = (record: {
+  year?: string | null;
+  make?: string | null;
+  model?: string | null;
+  plate_number?: string | null;
+}) => {
+  const year = record.year ? `${record.year} ` : "";
+  const make = record.make ?? "";
+  const model = record.model ?? "";
+  const plate = record.plate_number ? ` (${record.plate_number})` : "";
+  const label = `${year}${make} ${model}`.trim();
+  return `${label || "Vehicle"}${plate}`;
+};
+
+const resolveDate = (...values: Array<string | null | undefined>) => {
+  for (const value of values) {
+    if (value) return new Date(value);
+  }
+  return null;
+};
 
 export function ServiceFeedback() {
-  const [feedbacks, setFeedbacks] = useState<Feedback[]>(mockFeedbacks);
-  const [pendingServices, setPendingServices] =
-    useState<PendingService[]>(mockPendingServices);
+  const [feedbacks, setFeedbacks] = useState<Feedback[]>([]);
+  const [pendingServices, setPendingServices] = useState<PendingService[]>([]);
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
   const [selectedService, setSelectedService] = useState<PendingService | null>(
     null
@@ -82,32 +82,115 @@ export function ServiceFeedback() {
   const [rating, setRating] = useState(0);
   const [hoverRating, setHoverRating] = useState(0);
   const [comment, setComment] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmitReview = () => {
-    if (!selectedService || rating === 0) return;
-
-    const newFeedback: Feedback = {
-      id: `FB${(feedbacks.length + 1).toString().padStart(3, "0")}`,
-      serviceId: selectedService.id,
-      vehicle: selectedService.vehicle,
-      serviceType: selectedService.serviceType,
-      serviceDate: selectedService.completedDate,
-      rating,
-      comment,
-      submittedAt: new Date(),
-    };
-
-    setFeedbacks([newFeedback, ...feedbacks]);
-    setPendingServices(
-      pendingServices.map((svc) =>
-        svc.id === selectedService.id ? { ...svc, hasReview: true } : svc
-      )
+  const mapRating = (record: ServiceRatingRecord): Feedback => {
+    const serviceDate = resolveDate(
+      record.scheduled_date,
+      record.preferred_date,
+      record.completed_at,
+      record.created_at
     );
+    const submittedAt = parseDate(record.created_at) ?? new Date();
+    return {
+      id: String(record.rating_id),
+      bookingId: record.booking_id,
+      serviceId: formatServiceId(record.booking_id, serviceDate),
+      vehicle: formatVehicleLabel(record),
+      serviceType: record.service_type ?? "Service",
+      serviceDate,
+      rating: Number(record.rating ?? 0),
+      comment: record.comment ?? "",
+      submittedAt,
+      response: record.response ?? undefined,
+    };
+  };
 
+  const mapPending = (record: PendingRatingRecord): PendingService => {
+    const completedDate = resolveDate(
+      record.completed_at,
+      record.scheduled_date,
+      record.preferred_date
+    );
+    return {
+      bookingId: record.booking_id,
+      serviceId: formatServiceId(record.booking_id, completedDate),
+      vehicle: formatVehicleLabel(record),
+      serviceType: record.service_type ?? "Service",
+      completedDate,
+    };
+  };
+
+  const loadFeedback = async () => {
+    const user = getStoredUser();
+    if (!user) {
+      setError("No active session. Please sign in again.");
+      return;
+    }
+    if (!user.owner_id) {
+      setError("Owner profile not found. Please sign in again.");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    try {
+      const [ratings, pending] = await Promise.all([
+        apiListRatings(user.owner_id),
+        apiListPendingRatings(user.owner_id),
+      ]);
+      setFeedbacks(ratings.map(mapRating));
+      setPendingServices(pending.map(mapPending));
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to load feedback");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadFeedback();
+  }, []);
+
+  const resetReviewForm = () => {
     setReviewDialogOpen(false);
     setSelectedService(null);
     setRating(0);
+    setHoverRating(0);
     setComment("");
+  };
+
+  const handleSubmitReview = async () => {
+    if (!selectedService || rating === 0 || submitting) return;
+
+    const user = getStoredUser();
+    if (!user) {
+      setError("No active session. Please sign in again.");
+      return;
+    }
+    if (!user.owner_id) {
+      setError("Owner profile not found. Please sign in again.");
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+    try {
+      await apiSubmitRating({
+        bookingId: selectedService.bookingId,
+        ownerId: user.owner_id,
+        rating,
+        comment: comment.trim() ? comment.trim() : null,
+      });
+      await loadFeedback();
+      resetReviewForm();
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to submit review");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const StarRating = ({
@@ -119,6 +202,7 @@ export function ServiceFeedback() {
     onChange?: (rating: number) => void;
     readonly?: boolean;
   }) => {
+    const displayRating = readonly ? value : hoverRating || value;
     return (
       <div className="flex gap-1">
         {[1, 2, 3, 4, 5].map((star) => (
@@ -135,7 +219,7 @@ export function ServiceFeedback() {
           >
             <Star
               className={`h-6 w-6 ${
-                star <= (hoverRating || value)
+                star <= displayRating
                   ? "fill-yellow-400 text-yellow-400"
                   : "text-slate-300"
               }`}
@@ -148,9 +232,9 @@ export function ServiceFeedback() {
 
   const averageRating =
     feedbacks.length > 0
-      ? (feedbacks.reduce((sum, fb) => sum + fb.rating, 0) / feedbacks.length).toFixed(
-          1
-        )
+      ? (
+          feedbacks.reduce((sum, fb) => sum + fb.rating, 0) / feedbacks.length
+        ).toFixed(1)
       : "0.0";
 
   return (
@@ -162,6 +246,12 @@ export function ServiceFeedback() {
         <p className="text-slate-600 mt-1">
           Rate your service experience and help us improve
         </p>
+        {error && <p className="text-sm text-red-500 mt-2">{error}</p>}
+        {loading && (
+          <p className="text-sm text-muted-foreground mt-2">
+            Loading reviews...
+          </p>
+        )}
       </div>
 
       {/* Stats */}
@@ -200,7 +290,7 @@ export function ServiceFeedback() {
             <div>
               <p className="text-sm text-slate-600">Pending Reviews</p>
               <p className="text-2xl font-semibold text-slate-900">
-                {pendingServices.filter((s) => !s.hasReview).length}
+                {pendingServices.length}
               </p>
             </div>
           </div>
@@ -208,51 +298,54 @@ export function ServiceFeedback() {
       </div>
 
       {/* Pending Reviews */}
-      {pendingServices.filter((s) => !s.hasReview).length > 0 && (
+      {pendingServices.length > 0 && (
         <div className="space-y-4">
           <h3 className="font-semibold text-lg">Pending Reviews</h3>
-          {pendingServices
-            .filter((s) => !s.hasReview)
-            .map((service) => (
-              <Card key={service.id} className="p-4 md:p-6 bg-yellow-50 border-yellow-200">
-                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-                  <div className="space-y-2 flex-1">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline" className="bg-white">
-                        {service.id}
-                      </Badge>
-                      <Badge className="bg-yellow-600">Awaiting Review</Badge>
-                    </div>
-                    <div className="text-sm">
-                      <p>
-                        <span className="text-slate-600">Vehicle: </span>
-                        <span className="font-medium">{service.vehicle}</span>
-                      </p>
-                      <p>
-                        <span className="text-slate-600">Service: </span>
-                        <span className="font-medium">{service.serviceType}</span>
-                      </p>
-                      <p>
-                        <span className="text-slate-600">Completed: </span>
-                        <span className="font-medium">
-                          {format(service.completedDate, "MMM dd, yyyy")}
-                        </span>
-                      </p>
-                    </div>
+          {pendingServices.map((service) => (
+            <Card
+              key={service.serviceId}
+              className="p-4 md:p-6 bg-yellow-50 border-yellow-200"
+            >
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                <div className="space-y-2 flex-1">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className="bg-white">
+                      {service.serviceId}
+                    </Badge>
+                    <Badge className="bg-yellow-600">Awaiting Review</Badge>
                   </div>
-                  <Button
-                    onClick={() => {
-                      setSelectedService(service);
-                      setReviewDialogOpen(true);
-                    }}
-                    className="gap-2"
-                  >
-                    <Star className="h-4 w-4" />
-                    Write Review
-                  </Button>
+                  <div className="text-sm">
+                    <p>
+                      <span className="text-slate-600">Vehicle: </span>
+                      <span className="font-medium">{service.vehicle}</span>
+                    </p>
+                    <p>
+                      <span className="text-slate-600">Service: </span>
+                      <span className="font-medium">{service.serviceType}</span>
+                    </p>
+                    <p>
+                      <span className="text-slate-600">Completed: </span>
+                      <span className="font-medium">
+                        {service.completedDate
+                          ? format(service.completedDate, "MMM dd, yyyy")
+                          : "-"}
+                      </span>
+                    </p>
+                  </div>
                 </div>
-              </Card>
-            ))}
+                <Button
+                  onClick={() => {
+                    setSelectedService(service);
+                    setReviewDialogOpen(true);
+                  }}
+                  className="gap-2"
+                >
+                  <Star className="h-4 w-4" />
+                  Write Review
+                </Button>
+              </div>
+            </Card>
+          ))}
         </div>
       )}
 
@@ -269,7 +362,7 @@ export function ServiceFeedback() {
                     <div className="flex items-center gap-1">
                       <StarRating value={feedback.rating} readonly />
                       <span className="ml-2 font-semibold text-slate-900">
-                        {feedback.rating}.0
+                        {feedback.rating.toFixed(1)}
                       </span>
                     </div>
                   </div>
@@ -285,7 +378,11 @@ export function ServiceFeedback() {
                     </p>
                     <div className="flex items-center gap-2 text-slate-500">
                       <Calendar className="h-4 w-4" />
-                      <span>{format(feedback.serviceDate, "MMM dd, yyyy")}</span>
+                      <span>
+                        {feedback.serviceDate
+                          ? format(feedback.serviceDate, "MMM dd, yyyy")
+                          : "-"}
+                      </span>
                     </div>
                   </div>
 
@@ -300,7 +397,9 @@ export function ServiceFeedback() {
                       <p className="text-xs font-semibold text-blue-900 mb-1">
                         Shop Response
                       </p>
-                      <p className="text-sm text-blue-800">{feedback.response}</p>
+                      <p className="text-sm text-blue-800">
+                        {feedback.response}
+                      </p>
                     </div>
                   )}
 
@@ -313,7 +412,7 @@ export function ServiceFeedback() {
           </Card>
         ))}
 
-        {feedbacks.length === 0 && (
+        {!loading && feedbacks.length === 0 && (
           <Card className="p-12 text-center">
             <MessageSquare className="h-12 w-12 text-slate-300 mx-auto mb-3" />
             <p className="text-slate-500">No reviews submitted yet</p>
@@ -322,7 +421,16 @@ export function ServiceFeedback() {
       </div>
 
       {/* Review Dialog */}
-      <Dialog open={reviewDialogOpen} onOpenChange={setReviewDialogOpen}>
+      <Dialog
+        open={reviewDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            resetReviewForm();
+          } else {
+            setReviewDialogOpen(true);
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Write a Review</DialogTitle>
@@ -336,12 +444,16 @@ export function ServiceFeedback() {
                 </p>
                 <p className="text-sm">
                   <span className="text-slate-600">Service: </span>
-                  <span className="font-medium">{selectedService.serviceType}</span>
+                  <span className="font-medium">
+                    {selectedService.serviceType}
+                  </span>
                 </p>
                 <p className="text-sm">
                   <span className="text-slate-600">Completed: </span>
                   <span className="font-medium">
-                    {format(selectedService.completedDate, "MMM dd, yyyy")}
+                    {selectedService.completedDate
+                      ? format(selectedService.completedDate, "MMM dd, yyyy")
+                      : "-"}
                   </span>
                 </p>
               </div>
@@ -373,19 +485,14 @@ export function ServiceFeedback() {
             </div>
           )}
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setReviewDialogOpen(false);
-                setSelectedService(null);
-                setRating(0);
-                setComment("");
-              }}
-            >
+            <Button variant="outline" onClick={resetReviewForm}>
               Cancel
             </Button>
-            <Button onClick={handleSubmitReview} disabled={rating === 0}>
-              Submit Review
+            <Button
+              onClick={handleSubmitReview}
+              disabled={rating === 0 || submitting}
+            >
+              {submitting ? "Submitting..." : "Submit Review"}
             </Button>
           </DialogFooter>
         </DialogContent>
