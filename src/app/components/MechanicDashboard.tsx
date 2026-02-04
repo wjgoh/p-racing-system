@@ -14,6 +14,8 @@ interface MechanicDashboardProps {
 export interface Job {
   jobId: number;
   id: string;
+  ownerId: number;
+  vehicleId: number | null;
   vehicleOwner: string;
   vehicleMake: string;
   vehicleModel: string;
@@ -51,6 +53,8 @@ const mapMechanicJob = (job: MechanicJob): Job => {
   return {
     jobId: job.job_id,
     id: formatJobId(job.job_id),
+    ownerId: job.owner_id,
+    vehicleId: job.vehicle_id ?? null,
     vehicleOwner: job.owner_name ?? "Unknown Owner",
     vehicleMake: job.make ?? "-",
     vehicleModel: job.model ?? "-",

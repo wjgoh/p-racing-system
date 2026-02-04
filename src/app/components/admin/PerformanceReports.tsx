@@ -1,6 +1,9 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card } from "../ui/card";
 import { Label } from "../ui/label";
+import { Button } from "../ui/button";
+import { Badge } from "../ui/badge";
+import { Input } from "../ui/input";
 import {
   Select,
   SelectContent,
@@ -9,13 +12,16 @@ import {
   SelectValue,
 } from "../ui/select";
 import {
-  LineChart,
-  Line,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../ui/table";
+import {
   BarChart,
   Bar,
-  PieChart,
-  Pie,
-  Cell,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -23,46 +29,178 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
-import { TrendingUp, Users, Wrench, Clock, DollarSign } from "lucide-react";
+import { format } from "date-fns";
+import {
+  apiGenerateReportRequest,
+  apiGetYearlyWorkshopReport,
+  apiListAdminReportRequests,
+  type ReportRequestRecord,
+  type YearlyReport,
+} from "../api/reports";
+import { apiListWorkshops, type Workshop } from "../api/auth";
+
+const monthLabels = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+const formatReportDate = (value?: string | null) => {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return format(date, "MMM dd, yyyy");
+};
+
+const getReportStatusClasses = (status: ReportRequestRecord["status"]) => {
+  switch (status) {
+    case "generated":
+      return "bg-green-100 text-green-700 border-green-200";
+    case "rejected":
+      return "bg-red-100 text-red-700 border-red-200";
+    default:
+      return "bg-yellow-100 text-yellow-700 border-yellow-200";
+  }
+};
 
 export function PerformanceReports() {
-  const [timeRange, setTimeRange] = useState("month");
+  const [reportStatus, setReportStatus] = useState<
+    "pending" | "generated" | "rejected" | "all"
+  >("pending");
+  const [requests, setRequests] = useState<ReportRequestRecord[]>([]);
+  const [requestsLoading, setRequestsLoading] = useState(false);
+  const [requestsError, setRequestsError] = useState<string | null>(null);
+  const [generatingId, setGeneratingId] = useState<number | null>(null);
+  const [workshops, setWorkshops] = useState<Workshop[]>([]);
+  const [workshopsLoading, setWorkshopsLoading] = useState(false);
+  const [workshopsError, setWorkshopsError] = useState<string | null>(null);
+  const [selectedWorkshopId, setSelectedWorkshopId] = useState("");
+  const [selectedYear, setSelectedYear] = useState(
+    String(new Date().getFullYear())
+  );
+  const [yearlyReport, setYearlyReport] = useState<YearlyReport | null>(null);
+  const [yearlyLoading, setYearlyLoading] = useState(false);
+  const [yearlyError, setYearlyError] = useState<string | null>(null);
 
-  // Mock data for charts
-  const serviceData = [
-    { month: "Jan", services: 45, revenue: 12500 },
-    { month: "Feb", services: 52, revenue: 14800 },
-    { month: "Mar", services: 48, revenue: 13200 },
-    { month: "Apr", services: 61, revenue: 16500 },
-    { month: "May", services: 58, revenue: 15800 },
-    { month: "Jun", services: 65, revenue: 18200 },
-  ];
+  const loadRequests = async (status: typeof reportStatus) => {
+    setRequestsLoading(true);
+    setRequestsError(null);
+    try {
+      const data = await apiListAdminReportRequests({
+        status: status === "all" ? undefined : status,
+      });
+      setRequests(data);
+    } catch (err: any) {
+      setRequestsError(err?.message ?? "Failed to load report requests");
+    } finally {
+      setRequestsLoading(false);
+    }
+  };
 
-  const mechanicPerformance = [
-    { name: "Mike Smith", completed: 85, rating: 4.8 },
-    { name: "John Doe", completed: 72, rating: 4.6 },
-    { name: "Sarah Wilson", completed: 68, rating: 4.9 },
-    { name: "Tom Brown", completed: 55, rating: 4.5 },
-    { name: "Lisa Johnson", completed: 48, rating: 4.7 },
-  ];
+  const loadWorkshops = async () => {
+    setWorkshopsLoading(true);
+    setWorkshopsError(null);
+    try {
+      const data = await apiListWorkshops();
+      setWorkshops(data);
+    } catch (err: any) {
+      setWorkshopsError(err?.message ?? "Failed to load workshops");
+    } finally {
+      setWorkshopsLoading(false);
+    }
+  };
 
-  const serviceTypes = [
-    { name: "Oil Change", value: 30, color: "#3b82f6" },
-    { name: "Brake Service", value: 25, color: "#8b5cf6" },
-    { name: "Tire Rotation", value: 20, color: "#ec4899" },
-    { name: "Engine Repair", value: 15, color: "#f59e0b" },
-    { name: "Other", value: 10, color: "#10b981" },
-  ];
+  const loadYearlyReport = async (workshopId: string, year: string) => {
+    const parsedWorkshopId = Number(workshopId);
+    const parsedYear = Number(year);
+    if (Number.isNaN(parsedWorkshopId) || Number.isNaN(parsedYear)) {
+      setYearlyError("Select a valid workshop and year.");
+      return;
+    }
+    setYearlyLoading(true);
+    setYearlyError(null);
+    try {
+      const data = await apiGetYearlyWorkshopReport({
+        workshopId: parsedWorkshopId,
+        year: parsedYear,
+      });
+      setYearlyReport(data);
+    } catch (err: any) {
+      setYearlyError(err?.message ?? "Failed to load yearly report");
+    } finally {
+      setYearlyLoading(false);
+    }
+  };
 
-  const weeklyActivity = [
-    { day: "Mon", appointments: 12, completed: 10 },
-    { day: "Tue", appointments: 15, completed: 14 },
-    { day: "Wed", appointments: 18, completed: 16 },
-    { day: "Thu", appointments: 14, completed: 13 },
-    { day: "Fri", appointments: 20, completed: 18 },
-    { day: "Sat", appointments: 16, completed: 15 },
-    { day: "Sun", appointments: 8, completed: 7 },
-  ];
+  useEffect(() => {
+    void loadRequests(reportStatus);
+  }, [reportStatus]);
+
+  useEffect(() => {
+    void loadWorkshops();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedWorkshopId) return;
+    void loadYearlyReport(selectedWorkshopId, selectedYear);
+  }, [selectedWorkshopId, selectedYear]);
+
+  const handleGenerate = async (requestId: number) => {
+    if (generatingId) return;
+    setGeneratingId(requestId);
+    setRequestsError(null);
+    try {
+      const updated = await apiGenerateReportRequest(requestId);
+      setRequests((prev) => {
+        if (reportStatus === "pending") {
+          return prev.filter((item) => item.request_id !== updated.request_id);
+        }
+        return prev.map((item) =>
+          item.request_id === updated.request_id ? updated : item
+        );
+      });
+    } catch (err: any) {
+      setRequestsError(err?.message ?? "Failed to generate report");
+    } finally {
+      setGeneratingId(null);
+    }
+  };
+
+  const yearlySeries = useMemo(() => {
+    if (!yearlyReport) return [];
+    return yearlyReport.months.map((month) => ({
+      label: monthLabels[month.month - 1]?.slice(0, 3) ?? `M${month.month}`,
+      total: Number(month.total_revenue ?? 0),
+      paid: Number(month.paid_revenue ?? 0),
+      invoices: Number(month.invoice_count ?? 0),
+      month: month.month,
+    }));
+  }, [yearlyReport]);
+
+  const yearlyTotals = useMemo(() => {
+    const totalRevenue = yearlySeries.reduce(
+      (sum, item) => sum + item.total,
+      0
+    );
+    const paidRevenue = yearlySeries.reduce(
+      (sum, item) => sum + item.paid,
+      0
+    );
+    const invoiceCount = yearlySeries.reduce(
+      (sum, item) => sum + item.invoices,
+      0
+    );
+    return { totalRevenue, paidRevenue, invoiceCount };
+  }, [yearlySeries]);
 
   return (
     <div className="space-y-6">
@@ -74,211 +212,302 @@ export function PerformanceReports() {
             Monitor business performance and analytics
           </p>
         </div>
-        <div className="w-full sm:w-48">
-          <Label htmlFor="time-range">Time Range</Label>
-          <Select value={timeRange} onValueChange={setTimeRange}>
-            <SelectTrigger id="time-range">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="week">Last Week</SelectItem>
-              <SelectItem value="month">Last Month</SelectItem>
-              <SelectItem value="quarter">Last Quarter</SelectItem>
-              <SelectItem value="year">Last Year</SelectItem>
-            </SelectContent>
-          </Select>
+      </div>
+
+      {/* Monthly Sales Report Requests */}
+      <Card className="p-4 md:p-6">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div>
+            <h3 className="text-base md:text-lg font-semibold">
+              Monthly Sales Report Requests
+            </h3>
+            <p className="text-sm text-slate-600 mt-1">
+              Generate monthly sales reports for each workshop.
+            </p>
+            {requestsError && (
+              <p className="text-sm text-red-500 mt-2">{requestsError}</p>
+            )}
+          </div>
+          <div className="w-full md:w-48">
+            <Label htmlFor="report-status">Status</Label>
+            <Select
+              value={reportStatus}
+              onValueChange={(value) =>
+                setReportStatus(
+                  value as "pending" | "generated" | "rejected" | "all"
+                )
+              }
+            >
+              <SelectTrigger id="report-status">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="pending">Pending</SelectItem>
+                <SelectItem value="generated">Generated</SelectItem>
+                <SelectItem value="rejected">Rejected</SelectItem>
+                <SelectItem value="all">All</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
-      </div>
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="p-4 md:p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-muted-foreground">Total Revenue</p>
-              <p className="text-2xl md:text-3xl font-bold">$91,000</p>
-              <p className="text-xs md:text-sm text-green-600 flex items-center gap-1 mt-2">
-                <TrendingUp className="h-4 w-4" />
-                +12.5% from last period
-              </p>
-            </div>
-            <DollarSign className="h-10 w-10 md:h-12 md:w-12 text-green-600" />
-          </div>
-        </Card>
-
-        <Card className="p-4 md:p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-muted-foreground">Services Completed</p>
-              <p className="text-2xl md:text-3xl font-bold">329</p>
-              <p className="text-xs md:text-sm text-green-600 flex items-center gap-1 mt-2">
-                <TrendingUp className="h-4 w-4" />
-                +8.3% from last period
-              </p>
-            </div>
-            <Wrench className="h-10 w-10 md:h-12 md:w-12 text-blue-600" />
-          </div>
-        </Card>
-
-        <Card className="p-4 md:p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-muted-foreground">Active Users</p>
-              <p className="text-2xl md:text-3xl font-bold">1,243</p>
-              <p className="text-xs md:text-sm text-green-600 flex items-center gap-1 mt-2">
-                <TrendingUp className="h-4 w-4" />
-                +15.2% from last period
-              </p>
-            </div>
-            <Users className="h-10 w-10 md:h-12 md:w-12 text-purple-600" />
-          </div>
-        </Card>
-
-        <Card className="p-4 md:p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-muted-foreground">Avg. Service Time</p>
-              <p className="text-2xl md:text-3xl font-bold">2.4h</p>
-              <p className="text-xs md:text-sm text-green-600 flex items-center gap-1 mt-2">
-                <TrendingUp className="h-4 w-4" />
-                -5.1% from last period
-              </p>
-            </div>
-            <Clock className="h-10 w-10 md:h-12 md:w-12 text-orange-600" />
-          </div>
-        </Card>
-      </div>
-
-      {/* Charts Row 1 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card className="p-4 md:p-6">
-          <h3 className="text-base md:text-lg font-semibold mb-4">
-            Services & Revenue Trend
-          </h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={serviceData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-              <YAxis yAxisId="left" tick={{ fontSize: 12 }} />
-              <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 12 }} />
-              <Tooltip />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Line
-                yAxisId="left"
-                type="monotone"
-                dataKey="services"
-                stroke="#3b82f6"
-                strokeWidth={2}
-                name="Services"
-              />
-              <Line
-                yAxisId="right"
-                type="monotone"
-                dataKey="revenue"
-                stroke="#10b981"
-                strokeWidth={2}
-                name="Revenue ($)"
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </Card>
-
-        <Card className="p-4 md:p-6">
-          <h3 className="text-base md:text-lg font-semibold mb-4">
-            Service Type Distribution
-          </h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <PieChart>
-              <Pie
-                data={serviceTypes}
-                cx="50%"
-                cy="50%"
-                labelLine={false}
-                label={({ name, percent }) =>
-                  `${name} ${(percent * 100).toFixed(0)}%`
-                }
-                outerRadius={100}
-                fill="#8884d8"
-                dataKey="value"
-              >
-                {serviceTypes.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={entry.color} />
-                ))}
-              </Pie>
-              <Tooltip />
-            </PieChart>
-          </ResponsiveContainer>
-        </Card>
-      </div>
-
-      {/* Charts Row 2 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card className="p-4 md:p-6">
-          <h3 className="text-base md:text-lg font-semibold mb-4">
-            Top Mechanic Performance
-          </h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={mechanicPerformance}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" angle={-45} textAnchor="end" height={100} tick={{ fontSize: 10 }} />
-              <YAxis tick={{ fontSize: 12 }} />
-              <Tooltip />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Bar dataKey="completed" fill="#3b82f6" name="Completed Jobs" />
-            </BarChart>
-          </ResponsiveContainer>
-        </Card>
-
-        <Card className="p-4 md:p-6">
-          <h3 className="text-base md:text-lg font-semibold mb-4">Weekly Activity</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={weeklyActivity}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="day" tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} />
-              <Tooltip />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Bar dataKey="appointments" fill="#8b5cf6" name="Appointments" />
-              <Bar dataKey="completed" fill="#10b981" name="Completed" />
-            </BarChart>
-          </ResponsiveContainer>
-        </Card>
-      </div>
-
-      {/* Detailed Metrics Table */}
-      <Card className="p-4 md:p-6 overflow-hidden">
-        <h3 className="text-base md:text-lg font-semibold mb-4">Mechanic Details</h3>
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b">
-                <th className="text-left py-3 px-2 md:px-4 text-sm">Mechanic</th>
-                <th className="text-center py-3 px-2 md:px-4 text-sm">Completed</th>
-                <th className="text-center py-3 px-2 md:px-4 text-sm hidden sm:table-cell">Avg Rating</th>
-                <th className="text-center py-3 px-2 md:px-4 text-sm hidden md:table-cell">Rate</th>
-                <th className="text-center py-3 px-2 md:px-4 text-sm">Revenue</th>
-              </tr>
-            </thead>
-            <tbody>
-              {mechanicPerformance.map((mechanic, index) => (
-                <tr key={index} className="border-b hover:bg-accent">
-                  <td className="py-3 px-2 md:px-4 font-medium text-sm">{mechanic.name}</td>
-                  <td className="text-center py-3 px-2 md:px-4 text-sm">{mechanic.completed}</td>
-                  <td className="text-center py-3 px-2 md:px-4 text-sm hidden sm:table-cell">
-                    ⭐ {mechanic.rating}
-                  </td>
-                  <td className="text-center py-3 px-2 md:px-4 text-sm hidden md:table-cell">
-                    {Math.floor(Math.random() * 10 + 90)}%
-                  </td>
-                  <td className="text-center py-3 px-2 md:px-4 text-sm">
-                    ${(mechanic.completed * 250).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="mt-4 overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Workshop</TableHead>
+                <TableHead>Month</TableHead>
+                <TableHead>Year</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="hidden lg:table-cell">Requested</TableHead>
+                <TableHead className="hidden lg:table-cell">Generated</TableHead>
+                <TableHead className="text-right">Total</TableHead>
+                <TableHead className="text-right hidden md:table-cell">
+                  Paid
+                </TableHead>
+                <TableHead className="text-right hidden xl:table-cell">
+                  Invoices
+                </TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {requestsLoading ? (
+                <TableRow>
+                  <TableCell colSpan={10} className="text-center py-8">
+                    <p className="text-muted-foreground">
+                      Loading report requests...
+                    </p>
+                  </TableCell>
+                </TableRow>
+              ) : requests.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={10} className="text-center py-8">
+                    <p className="text-muted-foreground">
+                      No report requests found
+                    </p>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                requests.map((request) => (
+                  <TableRow key={request.request_id}>
+                    <TableCell className="font-medium">
+                      {request.workshop_name ?? `Workshop #${request.workshop_id}`}
+                    </TableCell>
+                    <TableCell>
+                      {monthLabels[request.month - 1] ?? `Month ${request.month}`}
+                    </TableCell>
+                    <TableCell>{request.year}</TableCell>
+                    <TableCell>
+                      <Badge className={getReportStatusClasses(request.status)}>
+                        {request.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="hidden lg:table-cell">
+                      {formatReportDate(request.created_at)}
+                    </TableCell>
+                    <TableCell className="hidden lg:table-cell">
+                      {formatReportDate(request.generated_at)}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      ${Number(request.total_revenue ?? 0).toFixed(2)}
+                    </TableCell>
+                    <TableCell className="text-right hidden md:table-cell">
+                      ${Number(request.paid_revenue ?? 0).toFixed(2)}
+                    </TableCell>
+                    <TableCell className="text-right hidden xl:table-cell">
+                      {request.invoice_count ?? 0}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {request.status === "pending" ? (
+                        <Button
+                          size="sm"
+                          onClick={() => handleGenerate(request.request_id)}
+                          disabled={generatingId === request.request_id}
+                        >
+                          {generatingId === request.request_id
+                            ? "Approving..."
+                            : "Approve"}
+                        </Button>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">
+                          Generated
+                        </span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
         </div>
       </Card>
+
+      {/* Yearly Workshop Report */}
+      <Card className="p-4 md:p-6">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div>
+            <h3 className="text-base md:text-lg font-semibold">
+              Yearly Workshop Report
+            </h3>
+            <p className="text-sm text-slate-600 mt-1">
+              Select a workshop to view its yearly sales summary.
+            </p>
+            {(workshopsError || yearlyError) && (
+              <p className="text-sm text-red-500 mt-2">
+                {workshopsError ?? yearlyError}
+              </p>
+            )}
+          </div>
+          <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
+            <div className="w-full sm:w-56">
+              <Label htmlFor="workshop-select">Workshop</Label>
+              <Select
+                value={selectedWorkshopId}
+                onValueChange={setSelectedWorkshopId}
+                disabled={workshopsLoading}
+              >
+                <SelectTrigger id="workshop-select">
+                  <SelectValue
+                    placeholder={
+                      workshopsLoading ? "Loading workshops..." : "Select workshop"
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {workshops.map((workshop) => (
+                    <SelectItem
+                      key={workshop.workshop_id}
+                      value={String(workshop.workshop_id)}
+                    >
+                      {workshop.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="w-full sm:w-32">
+              <Label htmlFor="year-select">Year</Label>
+              <Input
+                id="year-select"
+                type="number"
+                min="2000"
+                max="2100"
+                value={selectedYear}
+                onChange={(e) => setSelectedYear(e.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+
+        {selectedWorkshopId ? (
+          <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <Card className="p-4 md:p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <p className="text-sm text-muted-foreground">Total Revenue</p>
+                  <p className="text-2xl font-semibold">
+                    ${yearlyTotals.totalRevenue.toFixed(2)}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm text-muted-foreground">Paid Revenue</p>
+                  <p className="text-xl font-semibold text-green-600">
+                    ${yearlyTotals.paidRevenue.toFixed(2)}
+                  </p>
+                </div>
+              </div>
+              {yearlyLoading ? (
+                <p className="text-sm text-muted-foreground">
+                  Loading yearly report...
+                </p>
+              ) : (
+                <ResponsiveContainer width="100%" height={240}>
+                  <BarChart data={yearlySeries}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="label" tick={{ fontSize: 12 }} />
+                    <YAxis tick={{ fontSize: 12 }} />
+                    <Tooltip />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                    <Bar dataKey="total" fill="#3b82f6" name="Total Revenue" />
+                    <Bar dataKey="paid" fill="#10b981" name="Paid Revenue" />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </Card>
+
+            <Card className="p-4 md:p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <p className="text-sm text-muted-foreground">Invoices</p>
+                  <p className="text-2xl font-semibold">
+                    {yearlyTotals.invoiceCount}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm text-muted-foreground">Outstanding</p>
+                  <p className="text-xl font-semibold text-orange-600">
+                    $
+                    {Math.max(
+                      yearlyTotals.totalRevenue - yearlyTotals.paidRevenue,
+                      0
+                    ).toFixed(2)}
+                  </p>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Month</TableHead>
+                      <TableHead className="text-right">Total</TableHead>
+                      <TableHead className="text-right">Paid</TableHead>
+                      <TableHead className="text-right">Invoices</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {yearlySeries.map((month) => (
+                      <TableRow key={month.month}>
+                        <TableCell>
+                          {monthLabels[month.month - 1] ?? `Month ${month.month}`}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          ${month.total.toFixed(2)}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          ${month.paid.toFixed(2)}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {month.invoices}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {yearlySeries.length === 0 && !yearlyLoading && (
+                      <TableRow>
+                        <TableCell colSpan={4} className="text-center py-6">
+                          <p className="text-sm text-muted-foreground">
+                            No yearly data available.
+                          </p>
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </Card>
+          </div>
+        ) : (
+          <div className="mt-6">
+            <Card className="p-6 text-center">
+              <p className="text-sm text-muted-foreground">
+                Select a workshop to view the yearly report.
+              </p>
+            </Card>
+          </div>
+        )}
+      </Card>
+
     </div>
   );
 }
