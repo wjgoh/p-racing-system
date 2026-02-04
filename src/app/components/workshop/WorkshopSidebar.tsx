@@ -1,12 +1,19 @@
-import { ClipboardList, Calendar, FileText, BarChart3, X } from "lucide-react";
-import { ClipboardList, Calendar, FileText, MessageSquare, X } from "lucide-react";
+import {
+  ClipboardList,
+  Calendar,
+  FileText,
+  BarChart3,
+  MessageSquare,
+  X,
+} from "lucide-react";
 import { Button } from "../ui/button";
 import { cn } from "../ui/utils";
 
 interface WorkshopSidebarProps {
   currentView: string;
-  onViewChange: (view: "assignments" | "queue" | "invoices" | "reports") => void;
-  onViewChange: (view: "assignments" | "queue" | "invoices" | "reviews") => void;
+  onViewChange: (
+    view: "assignments" | "queue" | "invoices" | "reports" | "reviews"
+  ) => void;
   isOpen: boolean;
   onClose: () => void;
 }
@@ -66,9 +73,13 @@ export function WorkshopSidebar({
                 key={item.id}
                 onClick={() => {
                   onViewChange(
-                    item.id as "assignments" | "queue" | "invoices" | "reports"
+                    item.id as
+                      | "assignments"
+                      | "queue"
+                      | "invoices"
+                      | "reports"
+                      | "reviews"
                   );
-                  onViewChange(item.id as "assignments" | "queue" | "invoices" | "reviews");
                   onClose();
                 }}
                 className={cn(
