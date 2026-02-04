@@ -2,6 +2,7 @@ import {
   Users,
   BarChart3,
   MessageSquareHeart,
+  FileCheck,
   LogOut,
   Menu,
   X,
@@ -10,9 +11,9 @@ import { Button } from "../ui/button";
 import { useState } from "react";
 
 interface AdminSidebarProps {
-  currentView: "users" | "performance" | "satisfaction";
+  currentView: "users" | "performance" | "satisfaction" | "reports";
   onViewChange: (
-    view: "users" | "performance" | "satisfaction",
+    view: "users" | "performance" | "satisfaction" | "reports",
   ) => void;
   onLogout: () => void;
 }
@@ -40,9 +41,16 @@ export function AdminSidebar({
       label: "Customer Reviews",
       icon: MessageSquareHeart,
     },
+    {
+      id: "reports" as const,
+      label: "Workshop Approvals",
+      icon: FileCheck,
+    },
   ];
 
-  const handleViewChange = (view: "users" | "performance" | "satisfaction") => {
+  const handleViewChange = (
+    view: "users" | "performance" | "satisfaction" | "reports",
+  ) => {
     onViewChange(view);
     setIsMobileMenuOpen(false);
   };
@@ -80,7 +88,9 @@ export function AdminSidebar({
       >
         <div className="p-6 border-b border-border">
           <h2 className="text-xl font-bold">Admin Portal</h2>
-          <p className="text-sm text-muted-foreground">Governance & Monitoring</p>
+          <p className="text-sm text-muted-foreground">
+            Governance & Monitoring
+          </p>
         </div>
 
         <nav className="flex-1 p-4 space-y-2 overflow-y-auto">

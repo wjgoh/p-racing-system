@@ -16,14 +16,14 @@ const db = mysql.createPool({
 async function syncInvoiceForJob(jobId: number, createIfMissing: boolean) {
   const [jobRows] = await db.execute(
     "SELECT owner_id, workshop_id FROM jobs WHERE job_id = ? LIMIT 1",
-    [Number(jobId)]
+    [Number(jobId)],
   );
   const job = (jobRows as any[])[0];
   if (!job) return;
 
   const [invoiceRows] = await db.execute(
     "SELECT invoice_id FROM invoices WHERE job_id = ? LIMIT 1",
-    [Number(jobId)]
+    [Number(jobId)],
   );
   let invoiceId = (invoiceRows as any[])[0]?.invoice_id as number | undefined;
 
@@ -33,16 +33,14 @@ async function syncInvoiceForJob(jobId: number, createIfMissing: boolean) {
 
   const [partsRows] = await db.execute(
     "SELECT name, quantity, unit_cost, total_cost FROM job_parts WHERE job_id = ?",
-    [Number(jobId)]
+    [Number(jobId)],
   );
 
   let subtotal = 0;
   const items = (partsRows as any[]).map((part) => {
     const qty = Number(part.quantity ?? 0);
     const unit = Number(part.unit_cost ?? 0);
-    const total = Number(
-      part.total_cost ?? Math.round(qty * unit * 100) / 100
-    );
+    const total = Number(part.total_cost ?? Math.round(qty * unit * 100) / 100);
     subtotal += total;
     return {
       description: String(part.name),
@@ -68,13 +66,13 @@ async function syncInvoiceForJob(jobId: number, createIfMissing: boolean) {
         subtotal,
         tax,
         totalAmount,
-      ]
+      ],
     );
     invoiceId = (invoiceResult as any).insertId as number;
   } else {
     await db.execute(
       "UPDATE invoices SET subtotal = ?, tax = ?, total_amount = ? WHERE invoice_id = ?",
-      [subtotal, tax, totalAmount, Number(invoiceId)]
+      [subtotal, tax, totalAmount, Number(invoiceId)],
     );
   }
 
@@ -94,7 +92,7 @@ async function syncInvoiceForJob(jobId: number, createIfMissing: boolean) {
           item.quantity,
           item.unit_price,
           item.total,
-        ]
+        ],
       );
     }
   }
@@ -129,95 +127,105 @@ const server = http.createServer(async (req, res) => {
   }
 
   const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
-  
-// POST /api/register
-if (req.method === "POST" && url.pathname === "/api/register") {
-  const body = await readBody(req);
-  const { name, email, password, role, vehicles, workshop, workshopId } = body;
 
-  if (!name || !email || !password) {
-    return sendJson(res, 400, { error: "name, email, password required" });
-  }
+  // POST /api/register
+  if (req.method === "POST" && url.pathname === "/api/register") {
+    const body = await readBody(req);
+    const { name, email, password, role, vehicles, workshop, workshopId } =
+      body;
 
-  // default role OWNER
-  const userRole = (role ?? "OWNER") as string;
-  const passwordHash = await bcrypt.hash(password, 10);
+    if (!name || !email || !password) {
+      return sendJson(res, 400, { error: "name, email, password required" });
+    }
 
-  try {
-    let workshopIdForUser: number | null = null;
+    // default role OWNER
+    const userRole = (role ?? "OWNER") as string;
+    const passwordHash = await bcrypt.hash(password, 10);
 
-    if (userRole === "WORKSHOP") {
-      const workshopName = String(workshop?.name ?? "").trim();
-      if (!workshopName) {
-        return sendJson(res, 400, { error: "workshop name required" });
-      }
+    try {
+      let workshopIdForUser: number | null = null;
 
-      const [workshopResult] = await db.execute(
-        `INSERT INTO workshops (name, email, phone, address)
+      if (userRole === "WORKSHOP") {
+        const workshopName = String(workshop?.name ?? "").trim();
+        if (!workshopName) {
+          return sendJson(res, 400, { error: "workshop name required" });
+        }
+
+        const [workshopResult] = await db.execute(
+          `INSERT INTO workshops (name, email, phone, address)
          VALUES (?, ?, ?, ?)`,
-        [
-          workshopName,
-          workshop?.email ?? email ?? null,
-          workshop?.phone ?? null,
-          workshop?.address ?? null,
-        ]
-      );
-
-      workshopIdForUser = (workshopResult as any).insertId as number;
-    } else if (userRole === "MECHANIC" && workshopId) {
-      const parsedWorkshopId = Number(workshopId);
-      if (!Number.isNaN(parsedWorkshopId)) {
-        workshopIdForUser = parsedWorkshopId;
-      }
-    }
-
-    // 1) create user
-    const [result] = await db.execute(
-    `INSERT INTO users (name, email, password_hash, role, workshop_id)
-    VALUES (?, ?, ?, ?, ?)`,
-    [name, email, passwordHash, userRole, workshopIdForUser]
-    );
-
-    const userId = (result as any).insertId as number;
-    let ownerId: number | null = null;
-
-    // 2) If OWNER, create vehicle_owners row
-    if (userRole === "OWNER") {
-      const [ownerResult] = await db.execute(
-        `INSERT INTO vehicle_owners (user_id, phone) VALUES (?, ?)`,
-        [userId, null]
-      );
-      ownerId = (ownerResult as any).insertId as number;
-    }
-
-    // 3) OPTIONAL: insert vehicles if you have a vehicles table
-    // If you DON'T have vehicles table yet, skip this whole block.
-    if (userRole === "OWNER" && ownerId && Array.isArray(vehicles) && vehicles.length > 0) {
-      for (const v of vehicles) {
-        // adjust column names to your vehicles table schema
-        await db.execute(
-          `INSERT INTO vehicles (owner_id, plate_number, make, model, year, color)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [ownerId, v.plateNumber, v.make, v.model, v.year, v.color]
+          [
+            workshopName,
+            workshop?.email ?? email ?? null,
+            workshop?.phone ?? null,
+            workshop?.address ?? null,
+          ],
         );
-      }
-    }
 
-    return sendJson(res, 201, { user_id: userId, owner_id: ownerId, workshop_id: workshopIdForUser });
-  } catch (err: any) {
-    // duplicate email
-    if (String(err?.code) === "ER_DUP_ENTRY") {
-      return sendJson(res, 409, { error: "Email already exists" });
+        workshopIdForUser = (workshopResult as any).insertId as number;
+      } else if (userRole === "MECHANIC" && workshopId) {
+        const parsedWorkshopId = Number(workshopId);
+        if (!Number.isNaN(parsedWorkshopId)) {
+          workshopIdForUser = parsedWorkshopId;
+        }
+      }
+
+      // 1) create user
+      const [result] = await db.execute(
+        `INSERT INTO users (name, email, password_hash, role, workshop_id)
+    VALUES (?, ?, ?, ?, ?)`,
+        [name, email, passwordHash, userRole, workshopIdForUser],
+      );
+
+      const userId = (result as any).insertId as number;
+      let ownerId: number | null = null;
+
+      // 2) If OWNER, create vehicle_owners row
+      if (userRole === "OWNER") {
+        const [ownerResult] = await db.execute(
+          `INSERT INTO vehicle_owners (user_id, phone) VALUES (?, ?)`,
+          [userId, null],
+        );
+        ownerId = (ownerResult as any).insertId as number;
+      }
+
+      // 3) OPTIONAL: insert vehicles if you have a vehicles table
+      // If you DON'T have vehicles table yet, skip this whole block.
+      if (
+        userRole === "OWNER" &&
+        ownerId &&
+        Array.isArray(vehicles) &&
+        vehicles.length > 0
+      ) {
+        for (const v of vehicles) {
+          // adjust column names to your vehicles table schema
+          await db.execute(
+            `INSERT INTO vehicles (owner_id, plate_number, make, model, year, color)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+            [ownerId, v.plateNumber, v.make, v.model, v.year, v.color],
+          );
+        }
+      }
+
+      return sendJson(res, 201, {
+        user_id: userId,
+        owner_id: ownerId,
+        workshop_id: workshopIdForUser,
+      });
+    } catch (err: any) {
+      // duplicate email
+      if (String(err?.code) === "ER_DUP_ENTRY") {
+        return sendJson(res, 409, { error: "Email already exists" });
+      }
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
     }
-    console.error(err);
-    return sendJson(res, 500, { error: "Server error" });
   }
-}
   // GET /api/workshops
   if (req.method === "GET" && url.pathname === "/api/workshops") {
     try {
       const [rows] = await db.execute(
-        "SELECT workshop_id, name FROM workshops ORDER BY name"
+        "SELECT workshop_id, name FROM workshops ORDER BY name",
       );
       return sendJson(res, 200, { workshops: rows });
     } catch (err) {
@@ -242,7 +250,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
        FROM users u
        LEFT JOIN vehicle_owners vo ON vo.user_id = u.user_id
        WHERE u.email = ? LIMIT 1`,
-      [email]
+      [email],
     );
 
     const user = (rows as any[])[0];
@@ -250,8 +258,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
 
     // ASSIGNMENT MODE: plain password compare
     const verify = await bcrypt.compare(password, user.password_hash);
-    if (!verify) 
-        return sendJson(res, 401, { error: "Invalid credentials" });
+    if (!verify) return sendJson(res, 401, { error: "Invalid credentials" });
 
     return sendJson(res, 200, {
       user: {
@@ -277,7 +284,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
          FROM vehicles
          WHERE owner_id = ?
          ORDER BY vehicle_id DESC`,
-        [Number(ownerId)]
+        [Number(ownerId)],
       );
       return sendJson(res, 200, { vehicles: rows });
     } catch (err) {
@@ -306,7 +313,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
           model ?? null,
           year ?? null,
           color ?? null,
-        ]
+        ],
       );
       const vehicleId = (result as any).insertId as number;
       return sendJson(res, 201, { vehicle_id: vehicleId });
@@ -341,7 +348,9 @@ if (req.method === "POST" && url.pathname === "/api/register") {
       params.push(status);
     }
 
-    const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const whereClause = conditions.length
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
 
     try {
       const [rows] = await db.execute(
@@ -354,7 +363,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
          LEFT JOIN vehicles v ON b.vehicle_id = v.vehicle_id
          ${whereClause}
          ORDER BY b.created_at DESC`,
-        params
+        params,
       );
       return sendJson(res, 200, { bookings: rows });
     } catch (err) {
@@ -379,8 +388,17 @@ if (req.method === "POST" && url.pathname === "/api/register") {
       description,
     } = body;
 
-    if (!ownerId || !workshopId || !serviceType || !preferredDate || !preferredTime) {
-      return sendJson(res, 400, { error: "ownerId, workshopId, serviceType, preferredDate, preferredTime required" });
+    if (
+      !ownerId ||
+      !workshopId ||
+      !serviceType ||
+      !preferredDate ||
+      !preferredTime
+    ) {
+      return sendJson(res, 400, {
+        error:
+          "ownerId, workshopId, serviceType, preferredDate, preferredTime required",
+      });
     }
 
     try {
@@ -400,7 +418,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
           preferredDate,
           preferredTime,
           description ?? null,
-        ]
+        ],
       );
 
       const bookingId = (result as any).insertId as number;
@@ -416,21 +434,29 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     const body = await readBody(req);
     const { bookingId, status } = body;
 
-    const allowed = new Set(["pending", "confirmed", "rejected", "in-progress", "completed"]);
+    const allowed = new Set([
+      "pending",
+      "confirmed",
+      "rejected",
+      "in-progress",
+      "completed",
+    ]);
     if (!bookingId || !status || !allowed.has(String(status))) {
-      return sendJson(res, 400, { error: "bookingId and valid status required" });
+      return sendJson(res, 400, {
+        error: "bookingId and valid status required",
+      });
     }
 
     try {
       await db.execute(
         "UPDATE service_bookings SET status = ? WHERE booking_id = ?",
-        [status, Number(bookingId)]
+        [status, Number(bookingId)],
       );
 
       if (String(status) === "confirmed") {
         const [existing] = await db.execute(
           "SELECT job_id FROM jobs WHERE booking_id = ? LIMIT 1",
-          [Number(bookingId)]
+          [Number(bookingId)],
         );
         const already = (existing as any[])[0];
         if (!already) {
@@ -438,7 +464,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
             `SELECT owner_id, workshop_id, vehicle_id, service_type, description, preferred_date
              FROM service_bookings
              WHERE booking_id = ? LIMIT 1`,
-            [Number(bookingId)]
+            [Number(bookingId)],
           );
           const booking = (rows as any[])[0];
           if (booking) {
@@ -454,7 +480,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
                 booking.service_type,
                 booking.description ?? null,
                 booking.preferred_date ?? null,
-              ]
+              ],
             );
           }
         }
@@ -478,7 +504,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     try {
       const [existing] = await db.execute(
         "SELECT job_id FROM jobs WHERE booking_id = ? LIMIT 1",
-        [Number(bookingId)]
+        [Number(bookingId)],
       );
       const already = (existing as any[])[0];
       if (already) {
@@ -489,20 +515,22 @@ if (req.method === "POST" && url.pathname === "/api/register") {
         `SELECT owner_id, workshop_id, vehicle_id, service_type, description, preferred_date, status
          FROM service_bookings
          WHERE booking_id = ? LIMIT 1`,
-        [Number(bookingId)]
+        [Number(bookingId)],
       );
       const booking = (rows as any[])[0];
       if (!booking) {
         return sendJson(res, 404, { error: "Booking not found" });
       }
       if (String(booking.status) === "rejected") {
-        return sendJson(res, 400, { error: "Cannot create job for rejected booking" });
+        return sendJson(res, 400, {
+          error: "Cannot create job for rejected booking",
+        });
       }
 
       if (String(booking.status) === "pending") {
         await db.execute(
           "UPDATE service_bookings SET status = 'confirmed' WHERE booking_id = ?",
-          [Number(bookingId)]
+          [Number(bookingId)],
         );
       }
 
@@ -525,7 +553,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
           jobPriority,
           booking.preferred_date ?? null,
           estimatedTime ?? null,
-        ]
+        ],
       );
 
       const jobId = (result as any).insertId as number;
@@ -554,7 +582,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
          WHERE u.role = 'MECHANIC' AND u.workshop_id = ?
          GROUP BY u.user_id, u.name
          ORDER BY u.name`,
-        [Number(workshopId)]
+        [Number(workshopId)],
       );
       return sendJson(res, 200, { mechanics: rows });
     } catch (err) {
@@ -596,7 +624,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
          LEFT JOIN vehicles v ON v.vehicle_id = j.vehicle_id
          ${whereClause}
          ORDER BY j.created_at DESC`,
-        params
+        params,
       );
       return sendJson(res, 200, { jobs: rows });
     } catch (err) {
@@ -628,7 +656,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
          LEFT JOIN vehicles v ON v.vehicle_id = j.vehicle_id
          WHERE j.assigned_mechanic_id = ?
          ORDER BY j.updated_at DESC`,
-        [Number(mechanicId)]
+        [Number(mechanicId)],
       );
 
       const jobs = rows as any[];
@@ -643,13 +671,13 @@ if (req.method === "POST" && url.pathname === "/api/register") {
         `SELECT part_id, job_id, name, quantity, unit_cost
          FROM job_parts
          WHERE job_id IN (${placeholders})`,
-        jobIds
+        jobIds,
       );
       const [repairsRows] = await db.execute(
         `SELECT repair_id, job_id, description, logged_at
          FROM job_repairs
          WHERE job_id IN (${placeholders})`,
-        jobIds
+        jobIds,
       );
 
       const partsByJob: Record<number, any[]> = {};
@@ -696,7 +724,9 @@ if (req.method === "POST" && url.pathname === "/api/register") {
       params.push(Number(ownerId));
     }
 
-    const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const whereClause = conditions.length
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
 
     try {
       const [rows] = await db.execute(
@@ -715,7 +745,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
          LEFT JOIN vehicles v ON v.vehicle_id = j.vehicle_id
          ${whereClause}
          ORDER BY i.created_at DESC`,
-        params
+        params,
       );
 
       const invoices = rows as any[];
@@ -729,12 +759,13 @@ if (req.method === "POST" && url.pathname === "/api/register") {
         `SELECT item_id, invoice_id, description, quantity, unit_price, total
          FROM invoice_items
          WHERE invoice_id IN (${placeholders})`,
-        invoiceIds
+        invoiceIds,
       );
 
       const itemsByInvoice: Record<number, any[]> = {};
       for (const item of itemRows as any[]) {
-        if (!itemsByInvoice[item.invoice_id]) itemsByInvoice[item.invoice_id] = [];
+        if (!itemsByInvoice[item.invoice_id])
+          itemsByInvoice[item.invoice_id] = [];
         itemsByInvoice[item.invoice_id].push(item);
       }
 
@@ -764,7 +795,9 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     ]);
 
     if (!invoiceId || !status || !allowed.has(String(status))) {
-      return sendJson(res, 400, { error: "invoiceId and valid status required" });
+      return sendJson(res, 400, {
+        error: "invoiceId and valid status required",
+      });
     }
 
     try {
@@ -783,7 +816,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
       params.push(Number(invoiceId));
       await db.execute(
         `UPDATE invoices SET ${updates.join(", ")} WHERE invoice_id = ?`,
-        params
+        params,
       );
 
       return sendJson(res, 200, { ok: true });
@@ -804,7 +837,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     try {
       const [jobRows] = await db.execute(
         "SELECT job_id, workshop_id, status FROM jobs WHERE job_id = ? LIMIT 1",
-        [Number(jobId)]
+        [Number(jobId)],
       );
       const job = (jobRows as any[])[0];
       if (!job) return sendJson(res, 404, { error: "Job not found" });
@@ -814,7 +847,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
 
       const [mechRows] = await db.execute(
         "SELECT user_id, workshop_id FROM users WHERE user_id = ? AND role = 'MECHANIC' LIMIT 1",
-        [Number(mechanicId)]
+        [Number(mechanicId)],
       );
       const mech = (mechRows as any[])[0];
       if (!mech) return sendJson(res, 404, { error: "Mechanic not found" });
@@ -824,7 +857,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
 
       const [countRows] = await db.execute(
         "SELECT COUNT(*) as cnt FROM jobs WHERE assigned_mechanic_id = ? AND status IN ('assigned','in-progress')",
-        [Number(mechanicId)]
+        [Number(mechanicId)],
       );
       const current = Number((countRows as any[])[0]?.cnt ?? 0);
       if (current >= 2) {
@@ -833,7 +866,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
 
       await db.execute(
         "UPDATE jobs SET assigned_mechanic_id = ?, status = 'assigned' WHERE job_id = ?",
-        [Number(mechanicId), Number(jobId)]
+        [Number(mechanicId), Number(jobId)],
       );
       return sendJson(res, 200, { ok: true });
     } catch (err) {
@@ -858,7 +891,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
       const [result] = await db.execute(
         `INSERT INTO job_parts (job_id, name, quantity, unit_cost, total_cost)
          VALUES (?, ?, ?, ?, ?)`,
-        [Number(jobId), String(name), qty, unitCost, totalCost]
+        [Number(jobId), String(name), qty, unitCost, totalCost],
       );
 
       const partId = (result as any).insertId as number;
@@ -866,7 +899,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
       try {
         const [jobRows] = await db.execute(
           "SELECT status FROM jobs WHERE job_id = ? LIMIT 1",
-          [Number(jobId)]
+          [Number(jobId)],
         );
         const job = (jobRows as any[])[0];
         if (job && String(job.status) === "completed") {
@@ -900,17 +933,19 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     try {
       const [partRows] = await db.execute(
         "SELECT job_id FROM job_parts WHERE part_id = ? LIMIT 1",
-        [Number(partId)]
+        [Number(partId)],
       );
       const part = (partRows as any[])[0];
 
-      await db.execute("DELETE FROM job_parts WHERE part_id = ?", [Number(partId)]);
+      await db.execute("DELETE FROM job_parts WHERE part_id = ?", [
+        Number(partId),
+      ]);
 
       if (part?.job_id) {
         try {
           const [jobRows] = await db.execute(
             "SELECT status FROM jobs WHERE job_id = ? LIMIT 1",
-            [Number(part.job_id)]
+            [Number(part.job_id)],
           );
           const job = (jobRows as any[])[0];
           if (job && String(job.status) === "completed") {
@@ -940,13 +975,13 @@ if (req.method === "POST" && url.pathname === "/api/register") {
       const [result] = await db.execute(
         `INSERT INTO job_repairs (job_id, description)
          VALUES (?, ?)`,
-        [Number(jobId), String(description)]
+        [Number(jobId), String(description)],
       );
 
       const repairId = (result as any).insertId as number;
       const [rows] = await db.execute(
         "SELECT logged_at FROM job_repairs WHERE repair_id = ?",
-        [repairId]
+        [repairId],
       );
       const loggedAt = (rows as any[])[0]?.logged_at ?? null;
 
@@ -998,10 +1033,10 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     }
 
     try {
-      await db.execute(
-        "UPDATE jobs SET status = ? WHERE job_id = ?",
-        [status, Number(jobId)]
-      );
+      await db.execute("UPDATE jobs SET status = ? WHERE job_id = ?", [
+        status,
+        Number(jobId),
+      ]);
 
       if (String(status) === "completed") {
         await syncInvoiceForJob(Number(jobId), true);
@@ -1018,4 +1053,6 @@ if (req.method === "POST" && url.pathname === "/api/register") {
 });
 
 const port = Number(process.env.PORT ?? 4000);
-server.listen(port, () => console.log(`API running on http://localhost:${port}`));
+server.listen(port, () =>
+  console.log(`API running on http://localhost:${port}`),
+);

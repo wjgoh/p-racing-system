@@ -3,13 +3,16 @@ import { AdminSidebar } from "./admin/AdminSidebar";
 import { UserManagement } from "./admin/UserManagement";
 import { PerformanceReports } from "./admin/PerformanceReports";
 import { CustomerSatisfaction } from "./admin/CustomerSatisfaction";
+import { WorkshopReportApproval } from "./admin/WorkshopReportApproval";
 
 interface AdminDashboardProps {
   onLogout: () => void;
 }
 
 export function AdminDashboard({ onLogout }: AdminDashboardProps) {
-  const [currentView, setCurrentView] = useState<"users" | "performance" | "satisfaction">("users");
+  const [currentView, setCurrentView] = useState<
+    "users" | "performance" | "satisfaction" | "reports"
+  >("users");
 
   return (
     <div className="flex h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900 overflow-hidden">
@@ -18,12 +21,13 @@ export function AdminDashboard({ onLogout }: AdminDashboardProps) {
         onViewChange={setCurrentView}
         onLogout={onLogout}
       />
-      
+
       <main className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-8 pt-16 lg:pt-6">
         <div className="max-w-7xl mx-auto">
           {currentView === "users" && <UserManagement />}
           {currentView === "performance" && <PerformanceReports />}
           {currentView === "satisfaction" && <CustomerSatisfaction />}
+          {currentView === "reports" && <WorkshopReportApproval />}
         </div>
       </main>
     </div>

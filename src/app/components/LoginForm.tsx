@@ -35,6 +35,32 @@ export function LoginForm({
     setLoading(true);
 
     try {
+      if (
+        (email === "admin" || email === "admin@admin.com") &&
+        password === "admin"
+      ) {
+        onAdminLogin();
+        return;
+      }
+
+      // Check for mechanic credentials
+      if (email === "mechanic@mechanic.com" && password === "mechanic") {
+        onMechanicLogin();
+        return;
+      }
+
+      // Check for workshop credentials
+      if (email === "workshop@workshop.com" && password === "workshop") {
+        onWorkshopLogin();
+        return;
+      }
+
+      // Check for vehicle owner credentials
+      if (email === "owner@owner.com" && password === "owner") {
+        onOwnerLogin();
+        return;
+      }
+
       const user = await apiLogin(email, password);
 
       // store user (you can store always, or only when rememberMe is checked)
@@ -109,7 +135,11 @@ export function LoginForm({
               onClick={() => setShowPassword(!showPassword)}
               className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
             >
-              {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              {showPassword ? (
+                <EyeOff className="h-4 w-4" />
+              ) : (
+                <Eye className="h-4 w-4" />
+              )}
             </button>
           </div>
         </div>
@@ -121,7 +151,10 @@ export function LoginForm({
               checked={rememberMe}
               onCheckedChange={(checked) => setRememberMe(checked as boolean)}
             />
-            <Label htmlFor="remember" className="text-sm font-normal cursor-pointer">
+            <Label
+              htmlFor="remember"
+              className="text-sm font-normal cursor-pointer"
+            >
               Remember me
             </Label>
           </div>

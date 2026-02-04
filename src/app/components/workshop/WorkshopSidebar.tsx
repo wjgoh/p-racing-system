@@ -1,10 +1,12 @@
-import { ClipboardList, Calendar, FileText, X } from "lucide-react";
+import { ClipboardList, Calendar, FileText, BarChart3, X } from "lucide-react";
 import { Button } from "../ui/button";
 import { cn } from "../ui/utils";
 
 interface WorkshopSidebarProps {
   currentView: string;
-  onViewChange: (view: "assignments" | "queue" | "invoices") => void;
+  onViewChange: (
+    view: "assignments" | "queue" | "invoices" | "reports",
+  ) => void;
   isOpen: boolean;
   onClose: () => void;
 }
@@ -19,6 +21,7 @@ export function WorkshopSidebar({
     { id: "assignments", label: "Job Assignment", icon: ClipboardList },
     { id: "queue", label: "Reservation Queue", icon: Calendar },
     { id: "invoices", label: "Invoice Management", icon: FileText },
+    { id: "reports", label: "Report Requests", icon: BarChart3 },
   ];
 
   return (
@@ -35,7 +38,7 @@ export function WorkshopSidebar({
       <aside
         className={cn(
           "fixed lg:static inset-y-0 left-0 z-50 w-64 bg-white border-r border-slate-200 transform transition-transform duration-200 ease-in-out lg:translate-x-0",
-          isOpen ? "translate-x-0" : "-translate-x-full"
+          isOpen ? "translate-x-0" : "-translate-x-full",
         )}
       >
         <div className="flex flex-col h-full">
@@ -61,14 +64,16 @@ export function WorkshopSidebar({
               <button
                 key={item.id}
                 onClick={() => {
-                  onViewChange(item.id as "assignments" | "queue" | "invoices");
+                  onViewChange(
+                    item.id as "assignments" | "queue" | "invoices" | "reports",
+                  );
                   onClose();
                 }}
                 className={cn(
                   "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors",
                   currentView === item.id
                     ? "bg-blue-50 text-blue-700"
-                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900",
                 )}
               >
                 <item.icon className="h-5 w-5" />
