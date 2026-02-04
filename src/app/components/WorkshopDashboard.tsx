@@ -5,6 +5,8 @@ import { JobAssignment } from "./workshop/JobAssignment";
 import { ReservationQueue } from "./workshop/ReservationQueue";
 import { InvoiceManagement } from "./workshop/InvoiceManagement";
 import { RequestReports } from "./workshop/RequestReports";
+import { MonthlySalesReports } from "./workshop/MonthlySalesReports";
+import { WorkshopReviews } from "./workshop/WorkshopReviews";
 
 interface WorkshopDashboardProps {
   onLogout: () => void;
@@ -25,7 +27,9 @@ export function WorkshopDashboard({ onLogout }: WorkshopDashboardProps) {
       case "invoices":
         return <InvoiceManagement />;
       case "reports":
-        return <RequestReports />;
+        return <MonthlySalesReports />;
+      case "reviews":
+        return <WorkshopReviews />;
       default:
         return <JobAssignment />;
     }

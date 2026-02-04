@@ -23,77 +23,15 @@ interface Notification {
   timestamp: string;
   read: boolean;
 }
+import { getStoredUser } from "../api/session";
 
 interface VehicleOwnerHeaderProps {
   onLogout: () => void;
   onMenuToggle: () => void;
 }
 
-export function VehicleOwnerHeader({
-  onLogout,
-  onMenuToggle,
-}: VehicleOwnerHeaderProps) {
-  const [notifications, setNotifications] = useState<Notification[]>([
-    {
-      id: "n1",
-      title: "Service Completed",
-      message: "Your oil change service at Downtown Workshop is complete.",
-      type: "success",
-      timestamp: "2 hours ago",
-      read: false,
-    },
-    {
-      id: "n2",
-      title: "Service In Progress",
-      message: "Your brake pad replacement is currently being worked on.",
-      type: "info",
-      timestamp: "30 minutes ago",
-      read: false,
-    },
-    {
-      id: "n3",
-      title: "Invoice Ready",
-      message: "Invoice #INV-2026-001 is ready for download.",
-      type: "success",
-      timestamp: "1 day ago",
-      read: true,
-    },
-  ]);
-
-  const [isNotificationOpen, setIsNotificationOpen] = useState(false);
-  const [isProfileOpen, setIsProfileOpen] = useState(false);
-
-  const unreadCount = notifications.filter((n) => !n.read).length;
-
-  const markAsRead = (id: string) => {
-    setNotifications(
-      notifications.map((n) => (n.id === id ? { ...n, read: true } : n)),
-    );
-  };
-
-  const markAllAsRead = () => {
-    setNotifications(notifications.map((n) => ({ ...n, read: true })));
-  };
-
-  const deleteNotification = (id: string) => {
-    setNotifications(notifications.filter((n) => n.id !== id));
-  };
-
-  const getNotificationIcon = (type: string) => {
-    switch (type) {
-      case "success":
-        return <CheckCircle className="h-4 w-4 text-green-500" />;
-      case "warning":
-        return <AlertCircle className="h-4 w-4 text-yellow-500" />;
-      case "error":
-        return <AlertCircle className="h-4 w-4 text-red-500" />;
-      case "info":
-        return <Clock className="h-4 w-4 text-blue-500" />;
-      default:
-        return null;
-    }
-  };
-
+export function VehicleOwnerHeader({ onLogout, onMenuToggle }: VehicleOwnerHeaderProps) {
+  const user = getStoredUser();
   return (
     <header className="bg-white border-b border-slate-200 px-4 md:px-6 py-4">
       <div className="flex items-center justify-between">
@@ -108,7 +46,7 @@ export function VehicleOwnerHeader({
           </Button>
           <div>
             <h1 className="text-lg md:text-xl font-semibold text-slate-900">
-              Welcome back, John
+              Welcome back, {user?.name ?? "Owner"}
             </h1>
             <p className="text-sm text-slate-500 hidden md:block">
               Manage your vehicles and service requests

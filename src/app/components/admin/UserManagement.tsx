@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
@@ -28,51 +28,74 @@ import {
 } from "../ui/dialog";
 import { Badge } from "../ui/badge";
 import { UserPlus, Pencil, Trash2, Search } from "lucide-react";
+import {
+  apiCreateAdminUser,
+  apiDeactivateAdminUser,
+  apiListAdminUsers,
+  apiUpdateAdminUser,
+  type AdminUserRecord,
+} from "../api/admin";
 
 interface User {
-  id: string;
+  id: number;
   name: string;
   email: string;
   role: "admin" | "workshop" | "mechanic" | "vehicle owner";
   status: "active" | "inactive";
-  createdAt: string;
+  createdAt: string | null;
 }
 
+const mapRoleFromDb = (role: AdminUserRecord["role"]): User["role"] => {
+  switch (String(role ?? "").toUpperCase()) {
+    case "ADMIN":
+      return "admin";
+    case "WORKSHOP":
+      return "workshop";
+    case "MECHANIC":
+      return "mechanic";
+    case "OWNER":
+    default:
+      return "vehicle owner";
+  }
+};
+
+const mapRoleToDb = (
+  role: User["role"]
+): "ADMIN" | "WORKSHOP" | "MECHANIC" | "OWNER" => {
+  switch (role) {
+    case "admin":
+      return "ADMIN";
+    case "workshop":
+      return "WORKSHOP";
+    case "mechanic":
+      return "MECHANIC";
+    default:
+      return "OWNER";
+  }
+};
+
+const formatDateValue = (value: AdminUserRecord["created_at"]): string | null => {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(String(value));
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString().split("T")[0];
+};
+
+const mapUserRecord = (record: AdminUserRecord): User => ({
+  id: Number(record.user_id),
+  name: record.name ?? "",
+  email: record.email ?? "",
+  role: mapRoleFromDb(record.role),
+  status: record.status === "inactive" ? "inactive" : "active",
+  createdAt: formatDateValue(record.created_at),
+});
+
 export function UserManagement() {
-  const [users, setUsers] = useState<User[]>([
-    {
-      id: "1",
-      name: "Admin User",
-      email: "admin@example.com",
-      role: "admin",
-      status: "active",
-      createdAt: "2026-01-01",
-    },
-    {
-      id: "2",
-      name: "John's Workshop",
-      email: "john@workshop.com",
-      role: "workshop",
-      status: "active",
-      createdAt: "2026-01-10",
-    },
-    {
-      id: "3",
-      name: "Mike Smith",
-      email: "mike@mechanic.com",
-      role: "mechanic",
-      status: "active",
-      createdAt: "2026-01-15",
-    },
-    {
-      id: "4",
-      name: "Sarah Johnson",
-      email: "sarah@email.com",
-      role: "vehicle owner",
-      status: "active",
-      createdAt: "2026-01-18",
-    },
-  ]);
+  const [users, setUsers] = useState<User[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [filterRole, setFilterRole] = useState<string>("all");
@@ -83,53 +106,121 @@ export function UserManagement() {
     email: "",
     role: "vehicle owner" as User["role"],
     status: "active" as User["status"],
+    password: "",
   });
+
+  const loadUsers = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await apiListAdminUsers();
+      setUsers(data.map(mapUserRecord));
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to load users");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadUsers();
+  }, []);
 
   const handleAddUser = () => {
     setEditingUser(null);
+    setError(null);
     setFormData({
       name: "",
       email: "",
       role: "vehicle owner",
       status: "active",
+      password: "",
     });
     setIsDialogOpen(true);
   };
 
   const handleEditUser = (user: User) => {
     setEditingUser(user);
+    setError(null);
     setFormData({
       name: user.name,
       email: user.email,
       role: user.role,
       status: user.status,
+      password: "",
     });
     setIsDialogOpen(true);
   };
 
-  const handleDeleteUser = (id: string) => {
-    if (confirm("Are you sure you want to delete this user?")) {
-      setUsers(users.filter((u) => u.id !== id));
+  const handleDeleteUser = async (id: number) => {
+    if (deletingId) return;
+    const confirmed = confirm(
+      "Are you sure you want to deactivate this user? They will be unable to log in."
+    );
+    if (!confirmed) return;
+    setError(null);
+    setDeletingId(id);
+    try {
+      await apiDeactivateAdminUser(id);
+      setUsers((prev) =>
+        prev.map((user) =>
+          user.id === id ? { ...user, status: "inactive" } : user
+        )
+      );
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to deactivate user");
+    } finally {
+      setDeletingId(null);
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError(null);
 
-    if (editingUser) {
-      // Update existing user
-      setUsers(users.map((u) => (u.id === editingUser.id ? { ...u, ...formData } : u)));
-    } else {
-      // Add new user
-      const newUser: User = {
-        id: Date.now().toString(),
-        ...formData,
-        createdAt: new Date().toISOString().split("T")[0],
-      };
-      setUsers([...users, newUser]);
+    if (!formData.name.trim() || !formData.email.trim()) {
+      setError("Name and email are required.");
+      return;
     }
 
-    setIsDialogOpen(false);
+    if (!editingUser && !formData.password.trim()) {
+      setError("Password is required for new users.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      if (editingUser) {
+        const updated = await apiUpdateAdminUser({
+          userId: editingUser.id,
+          name: formData.name.trim(),
+          email: formData.email.trim(),
+          role: mapRoleToDb(formData.role),
+          status: formData.status,
+          password: formData.password.trim() || undefined,
+        });
+        setUsers((prev) =>
+          prev.map((user) =>
+            user.id === editingUser.id ? mapUserRecord(updated) : user
+          )
+        );
+      } else {
+        const created = await apiCreateAdminUser({
+          name: formData.name.trim(),
+          email: formData.email.trim(),
+          role: mapRoleToDb(formData.role),
+          status: formData.status,
+          password: formData.password,
+        });
+        setUsers((prev) => [mapUserRecord(created), ...prev]);
+      }
+
+      setIsDialogOpen(false);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to save user");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const filteredUsers = users.filter((user) => {
@@ -159,6 +250,7 @@ export function UserManagement() {
       <div>
         <h1 className="text-2xl md:text-3xl font-bold">User Management</h1>
         <p className="text-muted-foreground">Manage users and their roles</p>
+        {error && <p className="text-sm text-red-500 mt-2">{error}</p>}
       </div>
 
       {/* Filters and Actions */}
@@ -194,7 +286,11 @@ export function UserManagement() {
             </Select>
           </div>
 
-          <Button onClick={handleAddUser} className="gap-2 w-full md:w-auto">
+          <Button
+            onClick={handleAddUser}
+            className="gap-2 w-full md:w-auto"
+            disabled={saving}
+          >
             <UserPlus className="h-4 w-4" />
             Add User
           </Button>
@@ -216,7 +312,13 @@ export function UserManagement() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredUsers.length === 0 ? (
+              {loading ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="text-center py-8">
+                    <p className="text-muted-foreground">Loading users...</p>
+                  </TableCell>
+                </TableRow>
+              ) : filteredUsers.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6} className="text-center py-8">
                     <p className="text-muted-foreground">No users found</p>
@@ -246,13 +348,16 @@ export function UserManagement() {
                         {user.status}
                       </Badge>
                     </TableCell>
-                    <TableCell className="hidden lg:table-cell">{user.createdAt}</TableCell>
+                    <TableCell className="hidden lg:table-cell">
+                      {user.createdAt ?? "-"}
+                    </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
                         <Button
                           variant="ghost"
                           size="sm"
                           onClick={() => handleEditUser(user)}
+                          disabled={saving}
                         >
                           <Pencil className="h-4 w-4" />
                         </Button>
@@ -261,6 +366,7 @@ export function UserManagement() {
                           size="sm"
                           onClick={() => handleDeleteUser(user.id)}
                           className="text-destructive hover:text-destructive"
+                          disabled={saving || deletingId === user.id}
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -343,6 +449,28 @@ export function UserManagement() {
             </div>
 
             <div className="space-y-2">
+              <Label htmlFor="user-password">
+                Password {editingUser ? "(leave blank to keep current)" : ""}
+              </Label>
+              <Input
+                id="user-password"
+                type="password"
+                placeholder={editingUser ? "********" : "Create a password"}
+                value={formData.password}
+                onChange={(e) =>
+                  setFormData({ ...formData, password: e.target.value })
+                }
+                required={!editingUser}
+                minLength={8}
+              />
+              {!editingUser && (
+                <p className="text-xs text-muted-foreground">
+                  Minimum 8 characters.
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
               <Label htmlFor="user-role">Role</Label>
               <Select
                 value={formData.role}
@@ -385,11 +513,16 @@ export function UserManagement() {
                 type="button"
                 variant="outline"
                 onClick={() => setIsDialogOpen(false)}
+                disabled={saving}
               >
                 Cancel
               </Button>
-              <Button type="submit">
-                {editingUser ? "Update User" : "Create User"}
+              <Button type="submit" disabled={saving}>
+                {saving
+                  ? "Saving..."
+                  : editingUser
+                  ? "Update User"
+                  : "Create User"}
               </Button>
             </DialogFooter>
           </form>

@@ -41,6 +41,28 @@ CREATE TABLE `workshops` (
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `report_requests`
+--
+
+CREATE TABLE `report_requests` (
+  `request_id` int(11) NOT NULL AUTO_INCREMENT,
+  `workshop_id` int(11) NOT NULL,
+  `month` int(11) NOT NULL,
+  `year` int(11) NOT NULL,
+  `status` enum('pending','generated','rejected') NOT NULL DEFAULT 'pending',
+  `invoice_count` int(11) NOT NULL DEFAULT 0,
+  `total_revenue` decimal(12,2) NOT NULL DEFAULT 0.00,
+  `paid_revenue` decimal(12,2) NOT NULL DEFAULT 0.00,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp,
+  `generated_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`request_id`),
+  KEY `report_requests_workshop_id` (`workshop_id`),
+  CONSTRAINT `report_requests_ibfk_1` FOREIGN KEY (`workshop_id`) REFERENCES `workshops` (`workshop_id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- --------------------------------------------------------
+
+--
 -- Table structure for table `users`
 --
 
@@ -50,7 +72,9 @@ CREATE TABLE `users` (
   `email` varchar(100) DEFAULT NULL,
   `password_hash` varchar(255) DEFAULT NULL,
   `role` enum('OWNER','MECHANIC','WORKSHOP','ADMIN') DEFAULT NULL,
-  `workshop_id` int(11) DEFAULT NULL
+  `workshop_id` int(11) DEFAULT NULL,
+  `status` enum('active','inactive') NOT NULL DEFAULT 'active',
+  `created_at` datetime NOT NULL DEFAULT current_timestamp
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
@@ -73,7 +97,11 @@ CREATE TABLE `vehicles` (
   `make` varchar(50) DEFAULT NULL,
   `model` varchar(50) DEFAULT NULL,
   `year` varchar(10) DEFAULT NULL,
-  `color` varchar(30) DEFAULT NULL
+  `color` varchar(30) DEFAULT NULL,
+  `last_service_date` date DEFAULT NULL,
+  `next_service_date` date DEFAULT NULL,
+  `last_service_mileage` int(11) DEFAULT NULL,
+  `next_service_mileage` int(11) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- --------------------------------------------------------
@@ -262,7 +290,27 @@ CREATE TABLE `service_ratings` (
   `comment` varchar(500) DEFAULT NULL,
   `response` text DEFAULT NULL,
   `created_at` datetime NOT NULL DEFAULT current_timestamp,
-  `responded_at` datetime DEFAULT NULL
+  `responded_at` datetime DEFAULT NULL,
+  `deleted_at` datetime DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `rating_requests`
+--
+
+CREATE TABLE `rating_requests` (
+  `request_id` int(11) NOT NULL,
+  `rating_id` int(11) DEFAULT NULL,
+  `workshop_id` int(11) NOT NULL,
+  `requested_by` int(11) DEFAULT NULL,
+  `reason` text DEFAULT NULL,
+  `status` enum('pending','approved','rejected','deleted') DEFAULT 'pending',
+  `admin_notes` text DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp,
+  `updated_at` datetime NOT NULL DEFAULT current_timestamp ON UPDATE current_timestamp,
+  `resolved_at` datetime DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
@@ -389,6 +437,15 @@ ALTER TABLE `service_ratings`
   ADD KEY `mechanic_id` (`mechanic_id`);
 
 --
+-- Indexes for table `rating_requests`
+--
+ALTER TABLE `rating_requests`
+  ADD PRIMARY KEY (`request_id`),
+  ADD KEY `rating_id` (`rating_id`),
+  ADD KEY `workshop_id` (`workshop_id`),
+  ADD KEY `requested_by` (`requested_by`);
+
+--
 -- AUTO_INCREMENT for dumped tables
 --
 
@@ -476,6 +533,12 @@ ALTER TABLE `invoice_items`
 --
 ALTER TABLE `service_ratings`
   MODIFY `rating_id` int(11) NOT NULL AUTO_INCREMENT;
+
+--
+-- AUTO_INCREMENT for table `rating_requests`
+--
+ALTER TABLE `rating_requests`
+  MODIFY `request_id` int(11) NOT NULL AUTO_INCREMENT;
 
 --
 -- Constraints for dumped tables
@@ -572,6 +635,14 @@ ALTER TABLE `service_ratings`
   ADD CONSTRAINT `service_ratings_ibfk_2` FOREIGN KEY (`owner_id`) REFERENCES `vehicle_owners` (`owner_id`),
   ADD CONSTRAINT `service_ratings_ibfk_3` FOREIGN KEY (`workshop_id`) REFERENCES `workshops` (`workshop_id`),
   ADD CONSTRAINT `service_ratings_ibfk_4` FOREIGN KEY (`mechanic_id`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
+
+--
+-- Constraints for table `rating_requests`
+--
+ALTER TABLE `rating_requests`
+  ADD CONSTRAINT `rating_requests_ibfk_1` FOREIGN KEY (`rating_id`) REFERENCES `service_ratings` (`rating_id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  ADD CONSTRAINT `rating_requests_ibfk_2` FOREIGN KEY (`workshop_id`) REFERENCES `workshops` (`workshop_id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  ADD CONSTRAINT `rating_requests_ibfk_3` FOREIGN KEY (`requested_by`) REFERENCES `users` (`user_id`) ON DELETE SET NULL ON UPDATE CASCADE;
 COMMIT;
 
 /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
