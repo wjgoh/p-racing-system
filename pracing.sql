@@ -38,6 +38,28 @@ CREATE TABLE `workshops` (
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `report_requests`
+--
+
+CREATE TABLE `report_requests` (
+  `request_id` int(11) NOT NULL AUTO_INCREMENT,
+  `workshop_id` int(11) NOT NULL,
+  `month` int(11) NOT NULL,
+  `year` int(11) NOT NULL,
+  `status` enum('pending','generated','rejected') NOT NULL DEFAULT 'pending',
+  `invoice_count` int(11) NOT NULL DEFAULT 0,
+  `total_revenue` decimal(12,2) NOT NULL DEFAULT 0.00,
+  `paid_revenue` decimal(12,2) NOT NULL DEFAULT 0.00,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp,
+  `generated_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`request_id`),
+  KEY `report_requests_workshop_id` (`workshop_id`),
+  CONSTRAINT `report_requests_ibfk_1` FOREIGN KEY (`workshop_id`) REFERENCES `workshops` (`workshop_id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- --------------------------------------------------------
+
+--
 -- Table structure for table `users`
 --
 
@@ -47,7 +69,9 @@ CREATE TABLE `users` (
   `email` varchar(100) DEFAULT NULL,
   `password_hash` varchar(255) DEFAULT NULL,
   `role` enum('OWNER','MECHANIC','WORKSHOP','ADMIN') DEFAULT NULL,
-  `workshop_id` int(11) DEFAULT NULL
+  `workshop_id` int(11) DEFAULT NULL,
+  `status` enum('active','inactive') NOT NULL DEFAULT 'active',
+  `created_at` datetime NOT NULL DEFAULT current_timestamp
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
