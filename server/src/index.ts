@@ -385,6 +385,130 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     });
   }
 
+  // GET /api/owner/profile?ownerId=1
+  if (req.method === "GET" && url.pathname === "/api/owner/profile") {
+    const ownerId = url.searchParams.get("ownerId");
+    if (!ownerId) {
+      return sendJson(res, 400, { error: "ownerId required" });
+    }
+
+    try {
+      const [rows] = await db.execute(
+        `SELECT vo.owner_id, u.user_id, u.name, u.email, vo.phone
+         FROM vehicle_owners vo
+         LEFT JOIN users u ON u.user_id = vo.user_id
+         WHERE vo.owner_id = ? LIMIT 1`,
+        [Number(ownerId)]
+      );
+      const profile = (rows as any[])[0];
+      if (!profile) {
+        return sendJson(res, 404, { error: "Owner not found" });
+      }
+      return sendJson(res, 200, { profile });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/owner/profile
+  if (req.method === "POST" && url.pathname === "/api/owner/profile") {
+    const body = await readBody(req);
+    const { ownerId, name, email, phone, oldPassword, newPassword } = body;
+
+    if (!ownerId || !name) {
+      return sendJson(res, 400, { error: "ownerId and name required" });
+    }
+
+    const cleanedName = String(name).trim();
+    const cleanedEmail =
+      typeof email === "string" && email.trim() ? email.trim() : null;
+    const cleanedPhone =
+      typeof phone === "string" && phone.trim() ? phone.trim() : null;
+    const cleanedOldPassword =
+      typeof oldPassword === "string" && oldPassword.trim()
+        ? oldPassword.trim()
+        : null;
+    const cleanedPassword =
+      typeof newPassword === "string" && newPassword.trim()
+        ? newPassword.trim()
+        : null;
+
+    if (!cleanedName) {
+      return sendJson(res, 400, { error: "name required" });
+    }
+
+    if ((cleanedOldPassword && !cleanedPassword) || (!cleanedOldPassword && cleanedPassword)) {
+      return sendJson(res, 400, {
+        error: "oldPassword and newPassword are required to change password",
+      });
+    }
+
+    try {
+      const [ownerRows] = await db.execute(
+        `SELECT vo.owner_id, vo.user_id, u.email, u.password_hash
+         FROM vehicle_owners vo
+         LEFT JOIN users u ON u.user_id = vo.user_id
+         WHERE vo.owner_id = ? LIMIT 1`,
+        [Number(ownerId)]
+      );
+      const owner = (ownerRows as any[])[0];
+      if (!owner) {
+        return sendJson(res, 404, { error: "Owner not found" });
+      }
+
+      if (cleanedEmail && String(owner.email) !== String(cleanedEmail)) {
+        return sendJson(res, 400, { error: "Email cannot be changed" });
+      }
+
+      await db.execute(
+        "UPDATE users SET name = ? WHERE user_id = ?",
+        [cleanedName, Number(owner.user_id)]
+      );
+
+      if (cleanedPassword) {
+        if (!cleanedOldPassword) {
+          return sendJson(res, 400, { error: "oldPassword required" });
+        }
+        const isValid = await bcrypt.compare(
+          cleanedOldPassword,
+          String(owner.password_hash ?? "")
+        );
+        if (!isValid) {
+          return sendJson(res, 403, { error: "Old password is incorrect" });
+        }
+        if (cleanedPassword.length < 6) {
+          return sendJson(res, 400, {
+            error: "New password must be at least 6 characters",
+          });
+        }
+        const passwordHash = await bcrypt.hash(cleanedPassword, 10);
+        await db.execute("UPDATE users SET password_hash = ? WHERE user_id = ?", [
+          passwordHash,
+          Number(owner.user_id),
+        ]);
+      }
+
+      await db.execute(
+        "UPDATE vehicle_owners SET phone = ? WHERE owner_id = ?",
+        [cleanedPhone, Number(ownerId)]
+      );
+
+      const [rows] = await db.execute(
+        `SELECT vo.owner_id, u.user_id, u.name, u.email, vo.phone
+         FROM vehicle_owners vo
+         LEFT JOIN users u ON u.user_id = vo.user_id
+         WHERE vo.owner_id = ? LIMIT 1`,
+        [Number(ownerId)]
+      );
+
+      return sendJson(res, 200, { profile: (rows as any[])[0] });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
   // GET /api/admin/users
   if (req.method === "GET" && url.pathname === "/api/admin/users") {
     try {

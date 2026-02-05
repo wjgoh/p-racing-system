@@ -6,9 +6,14 @@ import { getStoredUser } from "../api/session";
 interface VehicleOwnerHeaderProps {
   onLogout: () => void;
   onMenuToggle: () => void;
+  onProfileClick: () => void;
 }
 
-export function VehicleOwnerHeader({ onLogout, onMenuToggle }: VehicleOwnerHeaderProps) {
+export function VehicleOwnerHeader({
+  onLogout,
+  onMenuToggle,
+  onProfileClick,
+}: VehicleOwnerHeaderProps) {
   const user = getStoredUser();
   return (
     <header className="bg-white border-b border-slate-200 px-4 md:px-6 py-4">
@@ -39,7 +44,7 @@ export function VehicleOwnerHeader({ onLogout, onMenuToggle }: VehicleOwnerHeade
               2
             </Badge>
           </Button>
-          <Button variant="ghost" size="icon">
+          <Button variant="ghost" size="icon" onClick={onProfileClick}>
             <User className="h-5 w-5" />
           </Button>
           <Button variant="ghost" onClick={onLogout} className="gap-2">

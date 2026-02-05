@@ -5,15 +5,22 @@ import { ServiceRequest } from "./owner/ServiceRequest";
 import { BillingHistory } from "./owner/BillingHistory";
 import { ServiceFeedback } from "./owner/ServiceFeedback";
 import { MyVehicles } from "./owner/MyVehicles";
+import { OwnerProfile } from "./owner/OwnerProfile";
 
 interface VehicleOwnerDashboardProps {
   onLogout: () => void;
 }
 
-type OwnerView = "vehicles" | "service-request" | "billing" | "feedback";
+type OwnerView =
+  | "vehicles"
+  | "service-request"
+  | "billing"
+  | "feedback"
+  | "profile";
 
 export function VehicleOwnerDashboard({ onLogout }: VehicleOwnerDashboardProps) {
   const [currentView, setCurrentView] = useState<OwnerView>("vehicles");
+  const [returnView, setReturnView] = useState<OwnerView>("vehicles");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const renderContent = () => {
@@ -26,6 +33,8 @@ export function VehicleOwnerDashboard({ onLogout }: VehicleOwnerDashboardProps) 
         return <BillingHistory />;
       case "feedback":
         return <ServiceFeedback />;
+      case "profile":
+        return <OwnerProfile onBack={() => setCurrentView(returnView)} />;
       default:
         return <MyVehicles />;
     }
@@ -46,6 +55,10 @@ export function VehicleOwnerDashboard({ onLogout }: VehicleOwnerDashboardProps) 
         <VehicleOwnerHeader
           onLogout={onLogout}
           onMenuToggle={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+          onProfileClick={() => {
+            setReturnView(currentView);
+            setCurrentView("profile");
+          }}
         />
         
         <main className="flex-1 overflow-auto p-4 md:p-6 lg:p-8">

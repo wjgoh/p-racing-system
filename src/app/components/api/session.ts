@@ -17,3 +17,16 @@ export function getStoredUser(): SessionUser | null {
     return null;
   }
 }
+
+export function setStoredUser(user: SessionUser) {
+  const raw = JSON.stringify(user);
+  if (localStorage.getItem("user")) {
+    localStorage.setItem("user", raw);
+    return;
+  }
+  if (sessionStorage.getItem("user")) {
+    sessionStorage.setItem("user", raw);
+    return;
+  }
+  localStorage.setItem("user", raw);
+}
