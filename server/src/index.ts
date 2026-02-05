@@ -365,7 +365,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     if (!user) return sendJson(res, 401, { error: "Invalid credentials" });
 
     if (userSchema.hasStatus && String(user.status) === "inactive") {
-      return sendJson(res, 403, { error: "Account is inactive" });
+      return sendJson(res, 403, { error: "Account is banned" });
     }
 
     // ASSIGNMENT MODE: plain password compare
@@ -617,102 +617,42 @@ if (req.method === "POST" && url.pathname === "/api/register") {
   // POST /api/admin/users/update
   if (req.method === "POST" && url.pathname === "/api/admin/users/update") {
     const body = await readBody(req);
-    const { userId, name, email, role, status, password, workshopId } = body;
+    const { userId, status, name, email, role, password, workshopId } = body;
 
     if (!userId) {
       return sendJson(res, 400, { error: "userId required" });
     }
 
-    const updates: string[] = [];
-    const params: Array<string | number | null> = [];
-    let normalizedRole: string | null = null;
-
-    if (name !== undefined) {
-      updates.push("name = ?");
-      params.push(name ? String(name) : null);
-    }
-
-    if (email !== undefined) {
-      updates.push("email = ?");
-      params.push(email ? String(email) : null);
-    }
-
-    if (role !== undefined) {
-      normalizedRole = String(role).toUpperCase();
-      const allowedRoles = new Set(["ADMIN", "WORKSHOP", "MECHANIC", "OWNER"]);
-      if (!allowedRoles.has(normalizedRole)) {
-        return sendJson(res, 400, { error: "invalid role" });
-      }
-      updates.push("role = ?");
-      params.push(normalizedRole);
-    }
-
-    if (workshopId !== undefined) {
-      const parsedWorkshopId = workshopId ? Number(workshopId) : null;
-      updates.push("workshop_id = ?");
-      params.push(
-        parsedWorkshopId && !Number.isNaN(parsedWorkshopId)
-          ? parsedWorkshopId
-          : null
-      );
-    }
-
-    if (userSchema.hasStatus && status !== undefined) {
-      updates.push("status = ?");
-      params.push(status === "inactive" ? "inactive" : "active");
-    }
-
-    if (password) {
-      const passwordHash = await bcrypt.hash(String(password), 10);
-      updates.push("password_hash = ?");
-      params.push(passwordHash);
-    }
-
-    if (updates.length === 0) {
-      return sendJson(res, 400, { error: "No fields to update" });
-    }
-
     try {
-      params.push(Number(userId));
-      await db.execute(
-        `UPDATE users SET ${updates.join(", ")} WHERE user_id = ?`,
-        params
-      );
+      if (
+        name !== undefined ||
+        email !== undefined ||
+        role !== undefined ||
+        password !== undefined ||
+        workshopId !== undefined
+      ) {
+        return sendJson(res, 400, {
+          error: "Only status updates are allowed",
+        });
+      }
+
+      if (!userSchema.hasStatus) {
+        return sendJson(res, 400, { error: "Status updates not supported" });
+      }
+
+      if (status === undefined) {
+        return sendJson(res, 400, { error: "status required" });
+      }
+
+      const normalizedStatus = status === "inactive" ? "inactive" : "active";
+      await db.execute("UPDATE users SET status = ? WHERE user_id = ?", [
+        normalizedStatus,
+        Number(userId),
+      ]);
 
       const userRecord = await fetchUserRecord(Number(userId));
       if (!userRecord) {
         return sendJson(res, 404, { error: "User not found" });
-      }
-
-      if (String(userRecord.role) === "OWNER") {
-        const [ownerRows] = await db.execute(
-          "SELECT owner_id FROM vehicle_owners WHERE user_id = ? LIMIT 1",
-          [Number(userId)]
-        );
-        if ((ownerRows as any[]).length === 0) {
-          await db.execute(
-            "INSERT INTO vehicle_owners (user_id, phone) VALUES (?, ?)",
-            [Number(userId), null]
-          );
-        }
-      }
-
-      if (String(userRecord.role) === "WORKSHOP" && !userRecord.workshop_id) {
-        const workshopName = String(userRecord.name ?? "").trim();
-        if (workshopName) {
-          const [workshopResult] = await db.execute(
-            `INSERT INTO workshops (name, email, phone, address)
-             VALUES (?, ?, ?, ?)`,
-            [workshopName, userRecord.email ?? null, null, null]
-          );
-          const newWorkshopId = (workshopResult as any).insertId as number;
-          await db.execute(
-            "UPDATE users SET workshop_id = ? WHERE user_id = ?",
-            [newWorkshopId, Number(userId)]
-          );
-          const refreshed = await fetchUserRecord(Number(userId));
-          return sendJson(res, 200, { user: refreshed });
-        }
       }
 
       return sendJson(res, 200, { user: userRecord });

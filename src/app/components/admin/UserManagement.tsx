@@ -27,10 +27,9 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Badge } from "../ui/badge";
-import { UserPlus, Pencil, Trash2, Search } from "lucide-react";
+import { UserPlus, Ban, CheckCircle, Search } from "lucide-react";
 import {
   apiCreateAdminUser,
-  apiDeactivateAdminUser,
   apiListAdminUsers,
   apiUpdateAdminUser,
   type AdminUserRecord,
@@ -100,7 +99,9 @@ export function UserManagement() {
   const [searchQuery, setSearchQuery] = useState("");
   const [filterRole, setFilterRole] = useState<string>("all");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmTarget, setConfirmTarget] = useState<User | null>(null);
+  const [confirmStatus, setConfirmStatus] = useState<User["status"]>("inactive");
   const [formData, setFormData] = useState({
     name: "",
     email: "",
@@ -127,7 +128,6 @@ export function UserManagement() {
   }, []);
 
   const handleAddUser = () => {
-    setEditingUser(null);
     setError(null);
     setFormData({
       name: "",
@@ -139,39 +139,38 @@ export function UserManagement() {
     setIsDialogOpen(true);
   };
 
-  const handleEditUser = (user: User) => {
-    setEditingUser(user);
-    setError(null);
-    setFormData({
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      status: user.status,
-      password: "",
-    });
-    setIsDialogOpen(true);
-  };
-
-  const handleDeleteUser = async (id: number) => {
+  const handleStatusChange = async (id: number, nextStatus: User["status"]) => {
     if (deletingId) return;
-    const confirmed = confirm(
-      "Are you sure you want to deactivate this user? They will be unable to log in."
-    );
-    if (!confirmed) return;
     setError(null);
     setDeletingId(id);
     try {
-      await apiDeactivateAdminUser(id);
+      const updated = await apiUpdateAdminUser({
+        userId: id,
+        status: nextStatus,
+      });
       setUsers((prev) =>
         prev.map((user) =>
-          user.id === id ? { ...user, status: "inactive" } : user
+          user.id === id ? mapUserRecord(updated) : user
         )
       );
     } catch (err: any) {
-      setError(err?.message ?? "Failed to deactivate user");
+      setError(err?.message ?? "Failed to update user status");
     } finally {
       setDeletingId(null);
     }
+  };
+
+  const openConfirm = (user: User, nextStatus: User["status"]) => {
+    setConfirmTarget(user);
+    setConfirmStatus(nextStatus);
+    setConfirmOpen(true);
+  };
+
+  const handleConfirm = async () => {
+    if (!confirmTarget) return;
+    await handleStatusChange(confirmTarget.id, confirmStatus);
+    setConfirmOpen(false);
+    setConfirmTarget(null);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -183,37 +182,21 @@ export function UserManagement() {
       return;
     }
 
-    if (!editingUser && !formData.password.trim()) {
+    if (!formData.password.trim()) {
       setError("Password is required for new users.");
       return;
     }
 
     setSaving(true);
     try {
-      if (editingUser) {
-        const updated = await apiUpdateAdminUser({
-          userId: editingUser.id,
-          name: formData.name.trim(),
-          email: formData.email.trim(),
-          role: mapRoleToDb(formData.role),
-          status: formData.status,
-          password: formData.password.trim() || undefined,
-        });
-        setUsers((prev) =>
-          prev.map((user) =>
-            user.id === editingUser.id ? mapUserRecord(updated) : user
-          )
-        );
-      } else {
-        const created = await apiCreateAdminUser({
-          name: formData.name.trim(),
-          email: formData.email.trim(),
-          role: mapRoleToDb(formData.role),
-          status: formData.status,
-          password: formData.password,
-        });
-        setUsers((prev) => [mapUserRecord(created), ...prev]);
-      }
+      const created = await apiCreateAdminUser({
+        name: formData.name.trim(),
+        email: formData.email.trim(),
+        role: mapRoleToDb(formData.role),
+        status: formData.status,
+        password: formData.password,
+      });
+      setUsers((prev) => [mapUserRecord(created), ...prev]);
 
       setIsDialogOpen(false);
     } catch (err: any) {
@@ -231,18 +214,28 @@ export function UserManagement() {
     return matchesSearch && matchesRole;
   });
 
-  const getRoleBadgeVariant = (role: User["role"]) => {
-    switch (role) {
-      case "admin":
-        return "destructive";
+const getRoleBadgeVariant = (role: User["role"]) => {
+  switch (role) {
+    case "admin":
+      return "destructive";
       case "workshop":
         return "default";
       case "mechanic":
         return "secondary";
       default:
-        return "outline";
-    }
-  };
+      return "outline";
+  }
+};
+
+const formatRoleLabel = (role: User["role"]) => {
+  if (!role) return "";
+  return role
+    .split(" ")
+    .map((word) =>
+      word ? `${word[0].toUpperCase()}${word.slice(1)}` : word
+    )
+    .join(" ");
+};
 
   return (
     <div className="space-y-6">
@@ -336,7 +329,7 @@ export function UserManagement() {
                     <TableCell className="hidden md:table-cell">{user.email}</TableCell>
                     <TableCell>
                       <Badge variant={getRoleBadgeVariant(user.role)}>
-                        {user.role}
+                        {formatRoleLabel(user.role)}
                       </Badge>
                     </TableCell>
                     <TableCell className="hidden sm:table-cell">
@@ -356,19 +349,31 @@ export function UserManagement() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => handleEditUser(user)}
-                          disabled={saving}
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteUser(user.id)}
-                          className="text-destructive hover:text-destructive"
+                          onClick={() =>
+                            openConfirm(
+                              user.id,
+                              user.status === "active" ? "inactive" : "active"
+                            )
+                          }
+                          className={
+                            user.status === "active"
+                              ? "text-destructive hover:text-destructive"
+                              : "text-emerald-600 hover:text-emerald-700"
+                          }
+                          title={user.status === "active" ? "Ban user" : "Unban user"}
                           disabled={saving || deletingId === user.id}
                         >
-                          <Trash2 className="h-4 w-4" />
+                          {user.status === "active" ? (
+                            <span className="flex items-center gap-2">
+                              <Ban className="h-4 w-4" />
+                              Ban
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-2">
+                              <CheckCircle className="h-4 w-4" />
+                              Unban
+                            </span>
+                          )}
                         </Button>
                       </div>
                     </TableCell>
@@ -411,12 +416,10 @@ export function UserManagement() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {editingUser ? "Edit User" : "Add New User"}
+              Add New User
             </DialogTitle>
             <DialogDescription>
-              {editingUser
-                ? "Update user information and role."
-                : "Create a new user account with a specific role."}
+              Create a new user account with a specific role.
             </DialogDescription>
           </DialogHeader>
 
@@ -450,24 +453,22 @@ export function UserManagement() {
 
             <div className="space-y-2">
               <Label htmlFor="user-password">
-                Password {editingUser ? "(leave blank to keep current)" : ""}
+                Password
               </Label>
               <Input
                 id="user-password"
                 type="password"
-                placeholder={editingUser ? "********" : "Create a password"}
+                placeholder="Create a password"
                 value={formData.password}
                 onChange={(e) =>
                   setFormData({ ...formData, password: e.target.value })
                 }
-                required={!editingUser}
+                required
                 minLength={8}
               />
-              {!editingUser && (
-                <p className="text-xs text-muted-foreground">
-                  Minimum 8 characters.
-                </p>
-              )}
+              <p className="text-xs text-muted-foreground">
+                Minimum 8 characters.
+              </p>
             </div>
 
             <div className="space-y-2">
@@ -518,14 +519,65 @@ export function UserManagement() {
                 Cancel
               </Button>
               <Button type="submit" disabled={saving}>
-                {saving
-                  ? "Saving..."
-                  : editingUser
-                  ? "Update User"
-                  : "Create User"}
+                {saving ? "Saving..." : "Create User"}
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {confirmStatus === "inactive" ? "Ban User" : "Unban User"}
+            </DialogTitle>
+            <DialogDescription>
+              {confirmStatus === "inactive"
+                ? "This user will be unable to log in until unbanned."
+                : "This user will regain access to the system."}
+            </DialogDescription>
+          </DialogHeader>
+
+          {confirmTarget && (
+            <div className="space-y-2 text-sm text-slate-600">
+              <p>
+                <span className="text-slate-500">Name:</span>{" "}
+                <span className="font-medium text-slate-900">
+                  {confirmTarget.name}
+                </span>
+              </p>
+              <p>
+                <span className="text-slate-500">Email:</span>{" "}
+                <span className="font-medium text-slate-900">
+                  {confirmTarget.email}
+                </span>
+              </p>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setConfirmOpen(false)}
+              disabled={deletingId !== null}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={handleConfirm}
+              disabled={deletingId !== null}
+              className={
+                confirmStatus === "inactive"
+                  ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  : ""
+              }
+            >
+              {confirmStatus === "inactive" ? "Ban User" : "Unban User"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
