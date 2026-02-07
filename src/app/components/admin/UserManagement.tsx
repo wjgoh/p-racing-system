@@ -95,6 +95,7 @@ export function UserManagement() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [roleUpdatingId, setRoleUpdatingId] = useState<number | null>(null);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [filterRole, setFilterRole] = useState<string>("all");
@@ -102,6 +103,9 @@ export function UserManagement() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmTarget, setConfirmTarget] = useState<User | null>(null);
   const [confirmStatus, setConfirmStatus] = useState<User["status"]>("inactive");
+  const [roleConfirmOpen, setRoleConfirmOpen] = useState(false);
+  const [roleConfirmTarget, setRoleConfirmTarget] = useState<User | null>(null);
+  const [roleConfirmRole, setRoleConfirmRole] = useState<"ADMIN" | "OWNER">("ADMIN");
   const [formData, setFormData] = useState({
     name: "",
     email: "",
@@ -171,6 +175,37 @@ export function UserManagement() {
     await handleStatusChange(confirmTarget.id, confirmStatus);
     setConfirmOpen(false);
     setConfirmTarget(null);
+  };
+
+  const openRoleConfirm = (user: User, nextRole: "ADMIN" | "OWNER") => {
+    setRoleConfirmTarget(user);
+    setRoleConfirmRole(nextRole);
+    setRoleConfirmOpen(true);
+  };
+
+  const handleRoleConfirm = async () => {
+    if (!roleConfirmTarget) return;
+    if (roleUpdatingId) return;
+
+    setError(null);
+    setRoleUpdatingId(roleConfirmTarget.id);
+    try {
+      const updated = await apiUpdateAdminUser({
+        userId: roleConfirmTarget.id,
+        role: roleConfirmRole,
+      });
+      setUsers((prev) =>
+        prev.map((user) =>
+          user.id === roleConfirmTarget.id ? mapUserRecord(updated) : user
+        )
+      );
+      setRoleConfirmOpen(false);
+      setRoleConfirmTarget(null);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to update user role");
+    } finally {
+      setRoleUpdatingId(null);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -351,7 +386,7 @@ const formatRoleLabel = (role: User["role"]) => {
                           size="sm"
                           onClick={() =>
                             openConfirm(
-                              user.id,
+                              user,
                               user.status === "active" ? "inactive" : "active"
                             )
                           }
@@ -375,6 +410,33 @@ const formatRoleLabel = (role: User["role"]) => {
                             </span>
                           )}
                         </Button>
+                        {user.role === "admin" ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openRoleConfirm(user, "OWNER")}
+                            disabled={
+                              saving ||
+                              deletingId === user.id ||
+                              roleUpdatingId === user.id
+                            }
+                          >
+                            Demote
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openRoleConfirm(user, "ADMIN")}
+                            disabled={
+                              saving ||
+                              deletingId === user.id ||
+                              roleUpdatingId === user.id
+                            }
+                          >
+                            Promote
+                          </Button>
+                        )}
                       </div>
                     </TableCell>
                   </TableRow>
@@ -576,6 +638,56 @@ const formatRoleLabel = (role: User["role"]) => {
               }
             >
               {confirmStatus === "inactive" ? "Ban User" : "Unban User"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={roleConfirmOpen} onOpenChange={setRoleConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {roleConfirmRole === "ADMIN" ? "Promote User" : "Demote User"}
+            </DialogTitle>
+            <DialogDescription>
+              {roleConfirmRole === "ADMIN"
+                ? "This user will have admin access."
+                : "This user will lose admin access."}
+            </DialogDescription>
+          </DialogHeader>
+
+          {roleConfirmTarget && (
+            <div className="space-y-2 text-sm text-slate-600">
+              <p>
+                <span className="text-slate-500">Name:</span>{" "}
+                <span className="font-medium text-slate-900">
+                  {roleConfirmTarget.name}
+                </span>
+              </p>
+              <p>
+                <span className="text-slate-500">Email:</span>{" "}
+                <span className="font-medium text-slate-900">
+                  {roleConfirmTarget.email}
+                </span>
+              </p>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setRoleConfirmOpen(false)}
+              disabled={roleUpdatingId !== null}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={handleRoleConfirm}
+              disabled={roleUpdatingId !== null}
+            >
+              {roleConfirmRole === "ADMIN" ? "Promote" : "Demote"}
             </Button>
           </DialogFooter>
         </DialogContent>
