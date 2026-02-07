@@ -112,6 +112,33 @@ async function ensureNotificationSchema() {
 
 void ensureNotificationSchema();
 
+async function ensureWorkshopNotificationSchema() {
+  try {
+    await db.execute(
+      `CREATE TABLE IF NOT EXISTS workshop_notifications (
+        notification_id INT(11) NOT NULL AUTO_INCREMENT,
+        workshop_id INT(11) NOT NULL,
+        source ENUM('owner','mechanic','admin','system') NOT NULL DEFAULT 'system',
+        event_type VARCHAR(50) NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        message TEXT NOT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        read_at DATETIME DEFAULT NULL,
+        PRIMARY KEY (notification_id),
+        KEY workshop_notifications_workshop_id (workshop_id),
+        KEY workshop_notifications_workshop_read (workshop_id, read_at, created_at),
+        CONSTRAINT workshop_notifications_ibfk_1
+          FOREIGN KEY (workshop_id) REFERENCES workshops (workshop_id)
+          ON DELETE CASCADE ON UPDATE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;`
+    );
+  } catch (err) {
+    console.error("Workshop notification schema check failed:", err);
+  }
+}
+
+void ensureWorkshopNotificationSchema();
+
 function buildUserSelectColumns() {
   const columns = [
     "u.user_id",
@@ -172,6 +199,31 @@ async function createOwnerNotification(payload: {
   } catch (err) {
     // Notifications should never break core flows.
     console.error("Failed to insert notification:", err);
+  }
+}
+
+async function createWorkshopNotification(payload: {
+  workshopId: number;
+  source: "owner" | "mechanic" | "admin" | "system";
+  eventType: string;
+  title: string;
+  message: string;
+}) {
+  try {
+    await db.execute(
+      `INSERT INTO workshop_notifications (workshop_id, source, event_type, title, message)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        Number(payload.workshopId),
+        payload.source,
+        payload.eventType,
+        payload.title,
+        payload.message,
+      ]
+    );
+  } catch (err) {
+    // Notifications should never break core flows.
+    console.error("Failed to insert workshop notification:", err);
   }
 }
 
@@ -289,6 +341,249 @@ function sendJson(res: http.ServerResponse, status: number, data: any) {
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
   });
   res.end(JSON.stringify(data));
+}
+
+type PdfLine = {
+  text: string;
+  fontSize?: number;
+  spacing?: number;
+};
+
+function sendPdf(
+  res: http.ServerResponse,
+  pdfBuffer: Buffer,
+  filename: string
+) {
+  res.writeHead(200, {
+    "Content-Type": "application/pdf",
+    "Content-Disposition": `attachment; filename=\"${filename}\"`,
+    "Content-Length": pdfBuffer.length,
+    "Cache-Control": "no-store",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  });
+  res.end(pdfBuffer);
+}
+
+function formatInvoiceNumber(invoiceId: number) {
+  return `INV-${String(invoiceId).padStart(4, "0")}`;
+}
+
+function toPdfSafeText(input: unknown) {
+  const text = String(input ?? "");
+  // Built-in PDF fonts use WinAnsi/Latin-1; keep ASCII to avoid encoding issues.
+  return text.replace(/[^\x20-\x7E]/g, "?");
+}
+
+function pdfEscapeText(input: string) {
+  return input.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+}
+
+function wrapText(input: string, maxLen: number): string[] {
+  const text = input.trim();
+  if (!text) return [""];
+
+  const words = text.split(/\s+/);
+  const lines: string[] = [];
+  let line = "";
+
+  for (const word of words) {
+    if (!line) {
+      if (word.length > maxLen) {
+        for (let i = 0; i < word.length; i += maxLen) {
+          lines.push(word.slice(i, i + maxLen));
+        }
+      } else {
+        line = word;
+      }
+      continue;
+    }
+
+    if ((line + " " + word).length <= maxLen) {
+      line += " " + word;
+      continue;
+    }
+
+    lines.push(line);
+    if (word.length > maxLen) {
+      for (let i = 0; i < word.length; i += maxLen) {
+        lines.push(word.slice(i, i + maxLen));
+      }
+      line = "";
+    } else {
+      line = word;
+    }
+  }
+
+  if (line) lines.push(line);
+  return lines;
+}
+
+function formatPdfDate(value: any): string {
+  if (!value) return "-";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function formatPdfMoney(value: any): string {
+  const num = Number(value ?? 0);
+  if (Number.isFinite(num)) return `$${num.toFixed(2)}`;
+  return "$0.00";
+}
+
+function buildSimplePdf(lines: PdfLine[]): Buffer {
+  const leftMargin = 72;
+  const startY = 760;
+
+  let y = startY;
+  let currentFontSize = 12;
+
+  const commands: string[] = ["BT", "/F1 12 Tf"];
+
+  for (const line of lines) {
+    const fontSize = line.fontSize ?? 12;
+    const spacing = line.spacing ?? Math.ceil(fontSize * 1.3);
+    const wrapped = wrapText(toPdfSafeText(line.text), 95);
+
+    if (fontSize !== currentFontSize) {
+      commands.push(`/F1 ${fontSize} Tf`);
+      currentFontSize = fontSize;
+    }
+
+    for (const part of wrapped) {
+      if (!part) {
+        y -= spacing;
+        continue;
+      }
+      const escaped = pdfEscapeText(part);
+      commands.push(`1 0 0 1 ${leftMargin} ${y} Tm (${escaped}) Tj`);
+      y -= spacing;
+    }
+  }
+
+  commands.push("ET");
+
+  const contentStream = commands.join("\n") + "\n";
+  const contentLength = Buffer.byteLength(contentStream, "utf8");
+
+  const objects: string[] = [];
+  objects.push("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj");
+  objects.push("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj");
+  objects.push(
+    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj"
+  );
+  objects.push(
+    "4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj"
+  );
+  objects.push(
+    `5 0 obj\n<< /Length ${contentLength} >>\nstream\n${contentStream}endstream\nendobj`
+  );
+
+  const header = "%PDF-1.4\n";
+  const parts: Buffer[] = [Buffer.from(header, "utf8")];
+  const offsets: number[] = [0];
+
+  let offset = Buffer.byteLength(header, "utf8");
+  for (const obj of objects) {
+    offsets.push(offset);
+    const chunk = Buffer.from(obj + "\n", "utf8");
+    parts.push(chunk);
+    offset += chunk.length;
+  }
+
+  const xrefOffset = offset;
+  const xrefLines: string[] = [];
+  xrefLines.push("xref");
+  xrefLines.push(`0 ${objects.length + 1}`);
+  xrefLines.push("0000000000 65535 f ");
+  for (let i = 1; i <= objects.length; i++) {
+    const off = offsets[i];
+    xrefLines.push(`${String(off).padStart(10, "0")} 00000 n `);
+  }
+
+  const trailer = [
+    "trailer",
+    `<< /Size ${objects.length + 1} /Root 1 0 R >>`,
+    "startxref",
+    String(xrefOffset),
+    "%%EOF",
+    "",
+  ].join("\n");
+
+  parts.push(Buffer.from(xrefLines.join("\n") + "\n" + trailer, "utf8"));
+  return Buffer.concat(parts);
+}
+
+function buildInvoicePdfBuffer(invoice: any, items: any[]): Buffer {
+  const invoiceId = Number(invoice.invoice_id ?? 0);
+  const invoiceNumber = formatInvoiceNumber(invoiceId);
+  const status = String(invoice.status ?? "pending").toUpperCase();
+
+  const vehicleParts = [invoice.year, invoice.make, invoice.model]
+    .filter(Boolean)
+    .join(" ");
+  const plate = invoice.plate_number ? ` (${invoice.plate_number})` : "";
+  const vehicle = `${vehicleParts || "Vehicle"}${plate}`;
+
+  const pdfLines: PdfLine[] = [
+    { text: `Invoice ${invoiceNumber}`, fontSize: 18, spacing: 26 },
+    { text: `Status: ${status}` },
+    { text: `Invoice Date: ${formatPdfDate(invoice.created_at)}` },
+  ];
+
+  if (invoice.due_date) {
+    pdfLines.push({ text: `Due Date: ${formatPdfDate(invoice.due_date)}` });
+  }
+  if (invoice.paid_date) {
+    pdfLines.push({ text: `Paid Date: ${formatPdfDate(invoice.paid_date)}` });
+  }
+
+  pdfLines.push({ text: "" });
+  pdfLines.push({ text: `Customer: ${invoice.owner_name ?? "N/A"}` });
+  pdfLines.push({ text: `Workshop: ${invoice.workshop_name ?? "N/A"}` });
+  pdfLines.push({ text: `Vehicle: ${vehicle}` });
+  if (invoice.service_type) pdfLines.push({ text: `Service: ${invoice.service_type}` });
+  if (invoice.mechanic_name) pdfLines.push({ text: `Mechanic: ${invoice.mechanic_name}` });
+
+  pdfLines.push({ text: "" });
+  pdfLines.push({ text: "Items:", fontSize: 14, spacing: 18 });
+
+  if (!items || items.length === 0) {
+    pdfLines.push({ text: "(No items)" });
+  } else {
+    for (const item of items) {
+      const qty = Number(item.quantity ?? 0);
+      const unit = Number(item.unit_price ?? 0);
+      const total = item.total != null ? Number(item.total) : qty * unit;
+      pdfLines.push({
+        text: `- ${item.description ?? "Item"} (x${qty}) @ ${formatPdfMoney(
+          unit
+        )} = ${formatPdfMoney(total)}`,
+      });
+    }
+  }
+
+  pdfLines.push({ text: "" });
+  pdfLines.push({ text: `Subtotal: ${formatPdfMoney(invoice.subtotal)}` });
+  pdfLines.push({ text: `Tax: ${formatPdfMoney(invoice.tax)}` });
+  pdfLines.push({
+    text: `Total: ${formatPdfMoney(invoice.total_amount)}`,
+    fontSize: 14,
+    spacing: 18,
+  });
+
+  if (invoice.notes) {
+    pdfLines.push({ text: "" });
+    pdfLines.push({ text: "Notes:", fontSize: 14, spacing: 18 });
+    pdfLines.push({ text: String(invoice.notes) });
+  }
+
+  return buildSimplePdf(pdfLines);
 }
 
 function readBody(req: http.IncomingMessage): Promise<any> {
@@ -659,6 +954,74 @@ if (req.method === "POST" && url.pathname === "/api/register") {
            SET read_at = NOW()
            WHERE owner_id = ? AND read_at IS NULL`,
           [Number(ownerId)]
+        );
+      }
+
+      return sendJson(res, 200, { ok: true });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // GET /api/workshop/notifications?workshopId=5
+  if (req.method === "GET" && url.pathname === "/api/workshop/notifications") {
+    const workshopId = url.searchParams.get("workshopId");
+    if (!workshopId) {
+      return sendJson(res, 400, { error: "workshopId required" });
+    }
+
+    try {
+      const [rows] = await db.execute(
+        `SELECT notification_id, workshop_id, source, event_type, title, message, created_at, read_at
+         FROM workshop_notifications
+         WHERE workshop_id = ?
+         ORDER BY created_at DESC
+         LIMIT 30`,
+        [Number(workshopId)]
+      );
+      return sendJson(res, 200, { events: rows });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/workshop/notifications/read
+  if (
+    req.method === "POST" &&
+    url.pathname === "/api/workshop/notifications/read"
+  ) {
+    const body = await readBody(req);
+    const { workshopId, notificationIds } = body;
+
+    if (!workshopId) {
+      return sendJson(res, 400, { error: "workshopId required" });
+    }
+
+    try {
+      if (Array.isArray(notificationIds) && notificationIds.length > 0) {
+        const ids = notificationIds
+          .map((id: any) => Number(id))
+          .filter((id: number) => !Number.isNaN(id));
+        if (ids.length === 0) {
+          return sendJson(res, 400, {
+            error: "notificationIds must be numbers",
+          });
+        }
+        const placeholders = ids.map(() => "?").join(", ");
+        await db.execute(
+          `UPDATE workshop_notifications
+           SET read_at = NOW()
+           WHERE workshop_id = ? AND read_at IS NULL AND notification_id IN (${placeholders})`,
+          [Number(workshopId), ...ids]
+        );
+      } else {
+        await db.execute(
+          `UPDATE workshop_notifications
+           SET read_at = NOW()
+           WHERE workshop_id = ? AND read_at IS NULL`,
+          [Number(workshopId)]
         );
       }
 
@@ -1105,6 +1468,16 @@ if (req.method === "POST" && url.pathname === "/api/register") {
         [invoiceCount, totalRevenue, paidRevenue, Number(requestId)]
       );
 
+      await createWorkshopNotification({
+        workshopId: Number(request.workshop_id),
+        source: "admin",
+        eventType: "report_generated",
+        title: "Report Approved",
+        message: `Your monthly sales report request for ${String(
+          request.month
+        ).padStart(2, "0")}/${request.year} has been generated.`,
+      });
+
       const [rows] = await db.execute(
         `SELECT r.*, w.name AS workshop_name
          FROM report_requests r
@@ -1483,6 +1856,39 @@ if (req.method === "POST" && url.pathname === "/api/register") {
       );
 
       const bookingId = (result as any).insertId as number;
+
+      let vehicleLabel: string | null = null;
+      try {
+        if (vehicleId) {
+          const [vehicleRows] = await db.execute(
+            "SELECT make, model, year, plate_number FROM vehicles WHERE vehicle_id = ? LIMIT 1",
+            [Number(vehicleId)]
+          );
+          const vehicle = (vehicleRows as any[])[0];
+          if (vehicle) {
+            const parts = [vehicle.year, vehicle.make, vehicle.model]
+              .filter(Boolean)
+              .join(" ");
+            const plate = vehicle.plate_number ? ` (${vehicle.plate_number})` : "";
+            vehicleLabel = `${parts || "Vehicle"}${plate}`;
+          }
+        }
+      } catch (err) {
+        console.error("Failed to enrich vehicle label for booking:", err);
+      }
+
+      const when = `${preferredDate ?? ""} ${preferredTime ?? ""}`.trim();
+      const customer = customerName ? String(customerName) : "a customer";
+      const vehicleSuffix = vehicleLabel ? ` for ${vehicleLabel}` : "";
+      const whenSuffix = when ? ` (${when})` : "";
+      await createWorkshopNotification({
+        workshopId: Number(workshopId),
+        source: "owner",
+        eventType: "booking_created",
+        title: "New Service Request",
+        message: `${serviceType}${vehicleSuffix} requested by ${customer}${whenSuffix}.`,
+      });
+
       return sendJson(res, 201, { booking_id: bookingId });
     } catch (err) {
       console.error(err);
@@ -2096,7 +2502,7 @@ if (req.method === "POST" && url.pathname === "/api/register") {
 
     try {
       const [rows] = await db.execute(
-        "SELECT request_id, rating_id FROM rating_requests WHERE request_id = ? LIMIT 1",
+        "SELECT request_id, rating_id, workshop_id FROM rating_requests WHERE request_id = ? LIMIT 1",
         [Number(requestId)]
       );
       const request = (rows as any[])[0];
@@ -2121,6 +2527,37 @@ if (req.method === "POST" && url.pathname === "/api/register") {
           "UPDATE service_ratings SET deleted_at = NOW() WHERE rating_id = ?",
           [Number(request.rating_id)]
         );
+      }
+
+      try {
+        if (request?.workshop_id) {
+          const title =
+            String(action) === "approved"
+              ? "Deletion Request Approved"
+              : String(action) === "rejected"
+              ? "Deletion Request Rejected"
+              : "Deletion Request Updated";
+          const ratingLabel = request.rating_id
+            ? `review #${Number(request.rating_id)}`
+            : "the review";
+          const notesSuffix = cleanedNotes ? ` Admin note: ${cleanedNotes}` : "";
+          const message =
+            String(action) === "approved"
+              ? `Your request to delete ${ratingLabel} was approved.${notesSuffix}`
+              : String(action) === "rejected"
+              ? `Your request to delete ${ratingLabel} was rejected.${notesSuffix}`
+              : `An admin updated your deletion request for ${ratingLabel}.${notesSuffix}`;
+
+          await createWorkshopNotification({
+            workshopId: Number(request.workshop_id),
+            source: "admin",
+            eventType: "rating_request_resolved",
+            title,
+            message,
+          });
+        }
+      } catch (err) {
+        console.error("Failed to create workshop notification for request:", err);
       }
 
       return sendJson(res, 200, { ok: true });
@@ -2340,6 +2777,65 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     }
   }
 
+  // GET /api/invoices/pdf?invoiceId=123
+  if (req.method === "GET" && url.pathname === "/api/invoices/pdf") {
+    const invoiceId = url.searchParams.get("invoiceId");
+    if (!invoiceId) {
+      return sendJson(res, 400, { error: "invoiceId required" });
+    }
+
+    try {
+      const parsedInvoiceId = Number(invoiceId);
+      if (Number.isNaN(parsedInvoiceId)) {
+        return sendJson(res, 400, { error: "invoiceId must be a number" });
+      }
+
+      const [rows] = await db.execute(
+        `SELECT i.invoice_id, i.job_id, i.record_id, i.owner_id, i.workshop_id,
+                i.subtotal, i.tax, i.total_amount, i.status, i.created_at,
+                i.due_date, i.paid_date, i.notes,
+                owner.name AS owner_name,
+                w.name AS workshop_name,
+                mech.name AS mechanic_name,
+                j.service_type,
+                v.make, v.model, v.year, v.plate_number
+         FROM invoices i
+         LEFT JOIN jobs j ON j.job_id = i.job_id
+         LEFT JOIN vehicle_owners vo ON vo.owner_id = i.owner_id
+         LEFT JOIN users owner ON owner.user_id = vo.user_id
+         LEFT JOIN workshops w ON w.workshop_id = i.workshop_id
+         LEFT JOIN users mech ON mech.user_id = j.assigned_mechanic_id
+         LEFT JOIN vehicles v ON v.vehicle_id = j.vehicle_id
+         WHERE i.invoice_id = ?
+         LIMIT 1`,
+        [parsedInvoiceId]
+      );
+
+      const invoice = (rows as any[])[0];
+      if (!invoice) {
+        return sendJson(res, 404, { error: "Invoice not found" });
+      }
+
+      const [itemRows] = await db.execute(
+        `SELECT item_id, invoice_id, description, quantity, unit_price, total
+         FROM invoice_items
+         WHERE invoice_id = ?
+         ORDER BY item_id ASC`,
+        [parsedInvoiceId]
+      );
+
+      const pdfBuffer = buildInvoicePdfBuffer(invoice, itemRows as any[]);
+      return sendPdf(
+        res,
+        pdfBuffer,
+        `${formatInvoiceNumber(parsedInvoiceId)}.pdf`
+      );
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
   // GET /api/invoices?workshopId=5 or /api/invoices?ownerId=3
   if (req.method === "GET" && url.pathname === "/api/invoices") {
     const workshopId = url.searchParams.get("workshopId");
@@ -2539,6 +3035,33 @@ if (req.method === "POST" && url.pathname === "/api/register") {
         console.error("Invoice sync failed:", err);
       }
 
+      try {
+        const [jobRows] = await db.execute(
+          `SELECT j.workshop_id, j.service_type,
+                  mech.name AS mechanic_name
+           FROM jobs j
+           LEFT JOIN users mech ON mech.user_id = j.assigned_mechanic_id
+           WHERE j.job_id = ? LIMIT 1`,
+          [Number(jobId)]
+        );
+        const job = (jobRows as any[])[0];
+        if (job?.workshop_id) {
+          const mechName = job.mechanic_name ? ` by ${job.mechanic_name}` : "";
+          const serviceLabel = job.service_type ? `${job.service_type} ` : "";
+          await createWorkshopNotification({
+            workshopId: Number(job.workshop_id),
+            source: "mechanic",
+            eventType: "job_part_added",
+            title: "Part Added",
+            message: `${serviceLabel}(Job #${Number(jobId)}) added ${qty}x ${String(
+              name
+            )}${mechName}.`,
+          });
+        }
+      } catch (err) {
+        console.error("Failed to create workshop notification for part:", err);
+      }
+
       return sendJson(res, 201, {
         part_id: partId,
         job_id: Number(jobId),
@@ -2613,6 +3136,34 @@ if (req.method === "POST" && url.pathname === "/api/register") {
       );
       const loggedAt = (rows as any[])[0]?.logged_at ?? null;
 
+      try {
+        const [jobRows] = await db.execute(
+          `SELECT j.workshop_id, j.service_type,
+                  mech.name AS mechanic_name
+           FROM jobs j
+           LEFT JOIN users mech ON mech.user_id = j.assigned_mechanic_id
+           WHERE j.job_id = ? LIMIT 1`,
+          [Number(jobId)]
+        );
+        const job = (jobRows as any[])[0];
+        if (job?.workshop_id) {
+          const cleaned = String(description ?? "").trim();
+          const snippet =
+            cleaned.length > 120 ? `${cleaned.slice(0, 117)}...` : cleaned;
+          const mechName = job.mechanic_name ? ` by ${job.mechanic_name}` : "";
+          const serviceLabel = job.service_type ? `${job.service_type} ` : "";
+          await createWorkshopNotification({
+            workshopId: Number(job.workshop_id),
+            source: "mechanic",
+            eventType: "job_repair_logged",
+            title: "Repair Logged",
+            message: `${serviceLabel}(Job #${Number(jobId)}) repair note: ${snippet}${mechName}.`,
+          });
+        }
+      } catch (err) {
+        console.error("Failed to create workshop notification for repair:", err);
+      }
+
       return sendJson(res, 201, {
         repair_id: repairId,
         job_id: Number(jobId),
@@ -2661,10 +3212,46 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     }
 
     try {
+      const [jobRows] = await db.execute(
+        `SELECT j.job_id, j.workshop_id, j.service_type, j.status,
+                mech.name AS mechanic_name
+         FROM jobs j
+         LEFT JOIN users mech ON mech.user_id = j.assigned_mechanic_id
+         WHERE j.job_id = ? LIMIT 1`,
+        [Number(jobId)]
+      );
+      const job = (jobRows as any[])[0];
+      if (!job) {
+        return sendJson(res, 404, { error: "Job not found" });
+      }
+      const previousStatus = String(job.status ?? "");
+
       await db.execute(
         "UPDATE jobs SET status = ? WHERE job_id = ?",
         [status, Number(jobId)]
       );
+
+      if (previousStatus !== String(status)) {
+        const prettyStatus =
+          String(status) === "in-progress" ? "in progress" : String(status);
+        const title =
+          String(status) === "completed"
+            ? "Job Completed"
+            : String(status) === "in-progress"
+            ? "Job Started"
+            : String(status) === "on-hold"
+            ? "Job On Hold"
+            : "Job Updated";
+        const mechName = job.mechanic_name ? ` by ${job.mechanic_name}` : "";
+        const serviceLabel = job.service_type ? `${job.service_type} ` : "";
+        await createWorkshopNotification({
+          workshopId: Number(job.workshop_id),
+          source: "mechanic",
+          eventType: "job_status",
+          title,
+          message: `${serviceLabel}(Job #${Number(jobId)}) is now ${prettyStatus}${mechName}.`,
+        });
+      }
 
       if (String(status) === "completed") {
         await syncInvoiceForJob(Number(jobId), true);

@@ -59,3 +59,22 @@ export async function apiUpdateInvoiceStatus(payload: {
   if (!res.ok) throw new Error(data?.error ?? "Failed to update invoice");
   return data;
 }
+
+export async function apiDownloadInvoicePdf(invoiceId: number): Promise<Blob> {
+  const res = await fetch(
+    `${API_BASE}/api/invoices/pdf?invoiceId=${encodeURIComponent(
+      String(invoiceId)
+    )}`
+  );
+
+  if (!res.ok) {
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      const data = await res.json();
+      throw new Error(data?.error ?? "Failed to download invoice PDF");
+    }
+    throw new Error("Failed to download invoice PDF");
+  }
+
+  return await res.blob();
+}
