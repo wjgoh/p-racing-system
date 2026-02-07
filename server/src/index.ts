@@ -85,6 +85,33 @@ async function ensureReportSchema() {
 
 void ensureReportSchema();
 
+async function ensureNotificationSchema() {
+  try {
+    await db.execute(
+      `CREATE TABLE IF NOT EXISTS notifications (
+        notification_id INT(11) NOT NULL AUTO_INCREMENT,
+        owner_id INT(11) NOT NULL,
+        source ENUM('admin','workshop','system') NOT NULL DEFAULT 'system',
+        event_type VARCHAR(50) NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        message TEXT NOT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        read_at DATETIME DEFAULT NULL,
+        PRIMARY KEY (notification_id),
+        KEY notifications_owner_id (owner_id),
+        KEY notifications_owner_read (owner_id, read_at, created_at),
+        CONSTRAINT notifications_ibfk_1
+          FOREIGN KEY (owner_id) REFERENCES vehicle_owners (owner_id)
+          ON DELETE CASCADE ON UPDATE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;`
+    );
+  } catch (err) {
+    console.error("Notification schema check failed:", err);
+  }
+}
+
+void ensureNotificationSchema();
+
 function buildUserSelectColumns() {
   const columns = [
     "u.user_id",
@@ -107,6 +134,45 @@ async function fetchUserRecord(userId: number) {
     [Number(userId)]
   );
   return (rows as any[])[0] ?? null;
+}
+
+async function fetchOwnerIdForUser(userId: number): Promise<number | null> {
+  try {
+    const [rows] = await db.execute(
+      "SELECT owner_id FROM vehicle_owners WHERE user_id = ? LIMIT 1",
+      [Number(userId)]
+    );
+    const ownerId = (rows as any[])[0]?.owner_id;
+    return ownerId ? Number(ownerId) : null;
+  } catch (err) {
+    console.error("Failed to fetch owner_id for user:", err);
+    return null;
+  }
+}
+
+async function createOwnerNotification(payload: {
+  ownerId: number;
+  source: "admin" | "workshop" | "system";
+  eventType: string;
+  title: string;
+  message: string;
+}) {
+  try {
+    await db.execute(
+      `INSERT INTO notifications (owner_id, source, event_type, title, message)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        Number(payload.ownerId),
+        payload.source,
+        payload.eventType,
+        payload.title,
+        payload.message,
+      ]
+    );
+  } catch (err) {
+    // Notifications should never break core flows.
+    console.error("Failed to insert notification:", err);
+  }
 }
 
 const SERVICE_INTERVAL_MONTHS = 6;
@@ -509,6 +575,100 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     }
   }
 
+  // GET /api/owner/notifications?ownerId=1
+  if (req.method === "GET" && url.pathname === "/api/owner/notifications") {
+    const ownerId = url.searchParams.get("ownerId");
+    if (!ownerId) {
+      return sendJson(res, 400, { error: "ownerId required" });
+    }
+
+    try {
+      const [eventRows] = await db.execute(
+        `SELECT notification_id, owner_id, source, event_type, title, message, created_at, read_at
+         FROM notifications
+         WHERE owner_id = ?
+         ORDER BY created_at DESC
+         LIMIT 20`,
+        [Number(ownerId)]
+      );
+
+      const [vehicleRows] = await db.execute(
+        `SELECT vehicle_id, make, model, plate_number, next_service_date,
+                (next_service_date < CURDATE()) AS is_overdue
+         FROM vehicles
+         WHERE owner_id = ?
+           AND next_service_date IS NOT NULL
+           AND next_service_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
+         ORDER BY next_service_date ASC
+         LIMIT 5`,
+        [Number(ownerId)]
+      );
+
+      const reminders = (vehicleRows as any[]).map((row) => {
+        const labelParts = [row.make, row.model].filter(Boolean).join(" ");
+        const plate = row.plate_number ? ` (${row.plate_number})` : "";
+        const vehicleLabel = `${labelParts || "Vehicle"}${plate}`;
+        const due = row.next_service_date ? String(row.next_service_date).slice(0, 10) : "";
+        const isOverdue = Number(row.is_overdue ?? 0) === 1;
+
+        return {
+          id: `service-${row.vehicle_id}-${due || "due"}`,
+          type: "service",
+          title: isOverdue ? "Service overdue" : "Service due soon",
+          message: due
+            ? `${vehicleLabel} is ${isOverdue ? "overdue" : "due"} on ${due}.`
+            : `${vehicleLabel} has an upcoming service due.`,
+          due_date: row.next_service_date ?? null,
+        };
+      });
+
+      return sendJson(res, 200, { events: eventRows, reminders });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
+  // POST /api/owner/notifications/read
+  if (req.method === "POST" && url.pathname === "/api/owner/notifications/read") {
+    const body = await readBody(req);
+    const { ownerId, notificationIds } = body;
+
+    if (!ownerId) {
+      return sendJson(res, 400, { error: "ownerId required" });
+    }
+
+    try {
+      if (Array.isArray(notificationIds) && notificationIds.length > 0) {
+        const ids = notificationIds
+          .map((id: any) => Number(id))
+          .filter((id: number) => !Number.isNaN(id));
+        if (ids.length === 0) {
+          return sendJson(res, 400, { error: "notificationIds must be numbers" });
+        }
+        const placeholders = ids.map(() => "?").join(", ");
+        await db.execute(
+          `UPDATE notifications
+           SET read_at = NOW()
+           WHERE owner_id = ? AND read_at IS NULL AND notification_id IN (${placeholders})`,
+          [Number(ownerId), ...ids]
+        );
+      } else {
+        await db.execute(
+          `UPDATE notifications
+           SET read_at = NOW()
+           WHERE owner_id = ? AND read_at IS NULL`,
+          [Number(ownerId)]
+        );
+      }
+
+      return sendJson(res, 200, { ok: true });
+    } catch (err) {
+      console.error(err);
+      return sendJson(res, 500, { error: "Server error" });
+    }
+  }
+
   // GET /api/admin/users
   if (req.method === "GET" && url.pathname === "/api/admin/users") {
     try {
@@ -624,35 +784,111 @@ if (req.method === "POST" && url.pathname === "/api/register") {
     }
 
     try {
+      const before = await fetchUserRecord(Number(userId));
+      if (!before) {
+        return sendJson(res, 404, { error: "User not found" });
+      }
+
       if (
         name !== undefined ||
         email !== undefined ||
-        role !== undefined ||
         password !== undefined ||
         workshopId !== undefined
       ) {
         return sendJson(res, 400, {
-          error: "Only status updates are allowed",
+          error: "Name, email, password, and workshop updates are not allowed",
         });
       }
 
-      if (!userSchema.hasStatus) {
-        return sendJson(res, 400, { error: "Status updates not supported" });
+      const updates: string[] = [];
+      const params: Array<string | number> = [];
+
+      if (status !== undefined) {
+        if (!userSchema.hasStatus) {
+          return sendJson(res, 400, { error: "Status updates not supported" });
+        }
+        updates.push("status = ?");
+        params.push(status === "inactive" ? "inactive" : "active");
       }
 
-      if (status === undefined) {
-        return sendJson(res, 400, { error: "status required" });
+      if (role !== undefined) {
+        const normalizedRole = String(role).toUpperCase();
+        const allowedRoles = new Set(["ADMIN", "OWNER"]);
+        if (!allowedRoles.has(normalizedRole)) {
+          return sendJson(res, 400, {
+            error: "Only ADMIN or OWNER role changes are allowed",
+          });
+        }
+        updates.push("role = ?");
+        params.push(normalizedRole);
       }
 
-      const normalizedStatus = status === "inactive" ? "inactive" : "active";
-      await db.execute("UPDATE users SET status = ? WHERE user_id = ?", [
-        normalizedStatus,
-        Number(userId),
-      ]);
+      if (updates.length === 0) {
+        return sendJson(res, 400, { error: "No fields to update" });
+      }
+
+      params.push(Number(userId));
+      await db.execute(
+        `UPDATE users SET ${updates.join(", ")} WHERE user_id = ?`,
+        params
+      );
 
       const userRecord = await fetchUserRecord(Number(userId));
       if (!userRecord) {
         return sendJson(res, 404, { error: "User not found" });
+      }
+
+      if (String(userRecord.role) === "OWNER") {
+        const [ownerRows] = await db.execute(
+          "SELECT owner_id FROM vehicle_owners WHERE user_id = ? LIMIT 1",
+          [Number(userId)]
+        );
+        if ((ownerRows as any[]).length === 0) {
+          await db.execute(
+            "INSERT INTO vehicle_owners (user_id, phone) VALUES (?, ?)",
+            [Number(userId), null]
+          );
+        }
+      }
+
+      const ownerIdForUser = await fetchOwnerIdForUser(Number(userId));
+      if (ownerIdForUser) {
+        if (
+          status !== undefined &&
+          String(before.status ?? "") !== String(userRecord.status ?? "")
+        ) {
+          const statusValue = String(userRecord.status ?? "active");
+          const isBanned = statusValue === "inactive";
+          await createOwnerNotification({
+            ownerId: ownerIdForUser,
+            source: "admin",
+            eventType: "account_status",
+            title: isBanned ? "Account Banned" : "Account Unbanned",
+            message: isBanned
+              ? "Your account has been banned by an administrator."
+              : "Your account ban has been removed by an administrator.",
+          });
+        }
+
+        if (
+          role !== undefined &&
+          String(before.role ?? "") !== String(userRecord.role ?? "")
+        ) {
+          const roleValue = String(userRecord.role ?? "");
+          const roleLabel =
+            roleValue === "ADMIN"
+              ? "Admin"
+              : roleValue === "OWNER"
+              ? "Vehicle Owner"
+              : roleValue;
+          await createOwnerNotification({
+            ownerId: ownerIdForUser,
+            source: "admin",
+            eventType: "role_change",
+            title: "Role Updated",
+            message: `Your account role has been updated to ${roleLabel}.`,
+          });
+        }
       }
 
       return sendJson(res, 200, { user: userRecord });
@@ -679,6 +915,16 @@ if (req.method === "POST" && url.pathname === "/api/register") {
         await db.execute("UPDATE users SET status = 'inactive' WHERE user_id = ?", [
           Number(userId),
         ]);
+        const ownerIdForUser = await fetchOwnerIdForUser(Number(userId));
+        if (ownerIdForUser) {
+          await createOwnerNotification({
+            ownerId: ownerIdForUser,
+            source: "admin",
+            eventType: "account_status",
+            title: "Account Banned",
+            message: "Your account has been banned by an administrator.",
+          });
+        }
         return sendJson(res, 200, { ok: true, status: "inactive" });
       }
 
@@ -1293,6 +1539,41 @@ if (req.method === "POST" && url.pathname === "/api/register") {
         }
       }
 
+      if (String(status) !== "pending") {
+        const [rows] = await db.execute(
+          `SELECT b.owner_id, b.status, b.service_type, w.name AS workshop_name
+           FROM service_bookings b
+           LEFT JOIN workshops w ON w.workshop_id = b.workshop_id
+           WHERE b.booking_id = ? LIMIT 1`,
+          [Number(bookingId)]
+        );
+        const booking = (rows as any[])[0];
+        if (booking?.owner_id) {
+          const statusValue = String(booking.status ?? status);
+          const prettyStatus =
+            statusValue === "in-progress" ? "in progress" : statusValue;
+          const title =
+            statusValue === "confirmed"
+              ? "Service Request Confirmed"
+              : statusValue === "rejected"
+              ? "Service Request Rejected"
+              : statusValue === "in-progress"
+              ? "Service In Progress"
+              : statusValue === "completed"
+              ? "Service Completed"
+              : "Service Request Updated";
+          const workshopName = booking.workshop_name ? ` at ${booking.workshop_name}` : "";
+          const serviceType = booking.service_type ?? "Service";
+          await createOwnerNotification({
+            ownerId: Number(booking.owner_id),
+            source: "workshop",
+            eventType: "booking_status",
+            title,
+            message: `${serviceType}${workshopName} is now ${prettyStatus}.`,
+          });
+        }
+      }
+
       return sendJson(res, 200, { ok: true });
     } catch (err) {
       console.error(err);
@@ -1666,6 +1947,33 @@ if (req.method === "POST" && url.pathname === "/api/register") {
         `UPDATE service_ratings SET ${updates.join(", ")} WHERE rating_id = ?`,
         params
       );
+
+      if (responseProvided && cleanedResponse) {
+        const [rows] = await db.execute(
+          `SELECT sr.owner_id, w.name AS workshop_name
+           FROM service_ratings sr
+           LEFT JOIN workshops w ON w.workshop_id = sr.workshop_id
+           WHERE sr.rating_id = ? LIMIT 1`,
+          [Number(ratingId)]
+        );
+        const rating = (rows as any[])[0];
+        if (rating?.owner_id) {
+          const workshopName = rating.workshop_name
+            ? ` from ${rating.workshop_name}`
+            : "";
+          const snippet =
+            cleanedResponse.length > 120
+              ? `${cleanedResponse.slice(0, 117)}...`
+              : cleanedResponse;
+          await createOwnerNotification({
+            ownerId: Number(rating.owner_id),
+            source: "workshop",
+            eventType: "review_response",
+            title: "Workshop Responded",
+            message: `You received a response${workshopName}: "${snippet}"`,
+          });
+        }
+      }
 
       return sendJson(res, 200, { ok: true });
     } catch (err) {
