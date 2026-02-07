@@ -34,7 +34,12 @@ import {
   FileText,
 } from "lucide-react";
 import { format } from "date-fns";
-import { apiListInvoices, apiUpdateInvoiceStatus, type InvoiceRecord } from "../api/invoices";
+import {
+  apiDownloadInvoicePdf,
+  apiListInvoices,
+  apiUpdateInvoiceStatus,
+  type InvoiceRecord,
+} from "../api/invoices";
 import { getStoredUser } from "../api/session";
 
 interface InvoiceItem {
@@ -82,6 +87,7 @@ export function BillingHistory() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [payingId, setPayingId] = useState<number | null>(null);
+  const [downloadingId, setDownloadingId] = useState<number | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [detailsDialogOpen, setDetailsDialogOpen] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
@@ -186,6 +192,28 @@ export function BillingHistory() {
       setError(err?.message ?? "Failed to pay invoice");
     } finally {
       setPayingId(null);
+    }
+  };
+
+  const handleDownloadInvoicePdf = async (invoice: Invoice) => {
+    if (downloadingId) return;
+    setDownloadingId(invoice.invoiceId);
+    setError(null);
+
+    try {
+      const blob = await apiDownloadInvoicePdf(invoice.invoiceId);
+      const objectUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = `${invoice.id}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(objectUrl);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to download invoice PDF");
+    } finally {
+      setDownloadingId(null);
     }
   };
 
@@ -327,9 +355,14 @@ export function BillingHistory() {
                   <Eye className="h-4 w-4" />
                   View
                 </Button>
-                <Button variant="outline" className="flex-1 md:flex-none gap-2">
+                <Button
+                  variant="outline"
+                  className="flex-1 md:flex-none gap-2"
+                  onClick={() => handleDownloadInvoicePdf(invoice)}
+                  disabled={downloadingId !== null}
+                >
                   <Download className="h-4 w-4" />
-                  Download
+                  {downloadingId === invoice.invoiceId ? "Downloading..." : "Download"}
                 </Button>
                 {invoice.status === "pending" && (
                   <Button
@@ -447,9 +480,18 @@ export function BillingHistory() {
             <Button variant="outline" onClick={() => setDetailsDialogOpen(false)}>
               Close
             </Button>
-            <Button variant="outline" className="gap-2">
+            <Button
+              variant="outline"
+              className="gap-2"
+              onClick={() =>
+                selectedInvoice && handleDownloadInvoicePdf(selectedInvoice)
+              }
+              disabled={downloadingId !== null}
+            >
               <Download className="h-4 w-4" />
-              Download PDF
+              {selectedInvoice && downloadingId === selectedInvoice.invoiceId
+                ? "Downloading..."
+                : "Download PDF"}
             </Button>
             {selectedInvoice?.status === "pending" && (
               <Button
